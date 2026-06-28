@@ -29,7 +29,7 @@ from transformers import AutoTokenizer
 THIS_FILE = Path(__file__).resolve()
 PROJECT_ROOT = THIS_FILE.parents[2]
 MODEL_REPO_DIR = PROJECT_ROOT / "generation" / "models" / "ming-omni-tts"
-DEFAULT_MODEL_PATH = PROJECT_ROOT / "models" / "pretrained" / "Ming-omni-tts-0.5B"
+DEFAULT_MODEL_PATH = PROJECT_ROOT / "models" / "pretrained" / "TTS" / "Ming-omni-tts-0.5B"
 DEFAULT_SCRIPTS_FILE = THIS_FILE.parent / "scripts.jsonl"
 DEFAULT_OUTPUT_DIR = THIS_FILE.parent / "ming_tss_scripts_tests"
 DEFAULT_PATIENT_REF_WAV = MODEL_REPO_DIR / "data" / "wavs" / "CTS-CN-F2F-2019-11-11-423-012-A.wav"
@@ -71,7 +71,7 @@ class MingAudio:
         if self.model.model_type == "dense":
             self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         else:
-            self.tokenizer = AutoTokenizer.from_pretrained(".", trust_remote_code=True)
+            self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
         self.model.tokenizer = self.tokenizer
         self.sample_rate = self.model.config.audio_tokenizer_config.sample_rate
@@ -238,7 +238,7 @@ def normalize_text(text: str) -> str:
     return text
 
 def build_dialogue_text(script: Dict) -> str:
-    segments = script.get("tts_segments", [])
+    segments = script.get("dialogue", [])
     lines: List[str] = []
     for segment in segments:
         speaker = str(segment.get("speaker", ""))
@@ -254,16 +254,38 @@ def build_dialogue_text(script: Dict) -> str:
     return " " + "\n ".join(lines) + "\n" if lines else ""
 
 
-def chunk_dialogue_text(dialogue_text: str, max_lines: int = 10) -> List[str]:
-    if max_lines is None or max_lines <= 0:
+def chunk_dialogue_text(dialogue_text: str, max_chars_per_chunk: int = 800) -> List[str]:
+    if max_chars_per_chunk is None or max_chars_per_chunk <= 0:
         return [dialogue_text] if dialogue_text.strip() else []
 
     lines = [line.strip() for line in dialogue_text.splitlines() if line.strip()]
+    if not lines:
+        return []
+
     chunks: List[str] = []
-    for offset in range(0, len(lines), max_lines):
-        chunk_lines = lines[offset : offset + max_lines]
-        if chunk_lines:
-            chunks.append(" " + "\n ".join(chunk_lines) + "\n")
+    current_lines: List[str] = []
+    current_chunk_text = ""
+
+    for line in lines:
+        if not current_lines:
+            current_lines = [line]
+            current_chunk_text = " " + line + "\n"
+            continue
+
+        candidate_lines = current_lines + [line]
+        candidate_text = " " + "\n ".join(candidate_lines) + "\n"
+
+        if len(candidate_text) > max_chars_per_chunk:
+            chunks.append(current_chunk_text)
+            current_lines = [line]
+            current_chunk_text = " " + line + "\n"
+        else:
+            current_lines = candidate_lines
+            current_chunk_text = candidate_text
+
+    if current_lines:
+        chunks.append(current_chunk_text)
+
     return chunks
 
 
@@ -277,7 +299,7 @@ def parse_scripts_file(path: Path) -> List[Dict]:
             try:
                 entries.append(json.loads(line))
             except json.JSONDecodeError as exc:
-                logger.warning("Skipping invalid JSON at %s:%s: %s", path, line_number, exc)
+                logger.warning("Skipping invalid JSON at {}:{}: {}".format(path, line_number, exc))
     return entries
 
 def run_script_case(
@@ -294,20 +316,20 @@ def run_script_case(
     sigma: float,
     temperature: float,
     max_decode_steps: int,
-    max_lines_per_chunk: int = 10,
+    max_chars_per_chunk: int = 800,
 ) -> Dict:
     output_path = output_dir / f"{safe_name(str(script_id))}.wav"
-    logger.info("Prompt Text: %s", prompt_text)
-    logger.info("Total dialogue text length: %s characters", len(text))
+    logger.info("Prompt Text: {}".format(prompt_text))
+    logger.info("Total dialogue text length: {} characters".format(len(text)))
 
-    chunk_texts = chunk_dialogue_text(text, max_lines=max_lines_per_chunk)
+    chunk_texts = chunk_dialogue_text(text, max_chars_per_chunk=max_chars_per_chunk)
     if not chunk_texts:
         raise ValueError(f"No valid dialogue lines to generate for script {script_id}")
 
-    logger.info("Generating %s chunk(s) for %s", len(chunk_texts), script_id)
+    logger.info("Generating {} chunk(s) for {}".format(len(chunk_texts), script_id))
     waveform_chunks: List[torch.Tensor] = []
     for chunk_index, chunk_text in enumerate(chunk_texts, start=1):
-        logger.info("Generating chunk %s/%s for %s", chunk_index, len(chunk_texts), script_id)
+        logger.info("Generating chunk {}/{} for {}".format(chunk_index, len(chunk_texts), script_id))
         chunk_waveform = model.speech_generation(
             prompt=prompt,
             text=chunk_text,
@@ -338,7 +360,7 @@ def run_script_case(
         "temperature": temperature,
         "max_decode_steps": max_decode_steps,
         "chunks": len(chunk_texts),
-        "lines_per_chunk": max_lines_per_chunk,
+        "max_chars_per_chunk": max_chars_per_chunk,
     }
 
 
@@ -364,10 +386,15 @@ def main() -> None:
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--cfg", type=float, default=2.0)
     parser.add_argument("--sigma", type=float, default=0.25)
-    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--temperature", type=float, default=0.1)
     parser.add_argument("--max-decode-steps", type=int, default=260)
-    parser.add_argument("--max-lines-per-chunk", type=int, default=12,
-                        help="Maximum number of dialogue lines to generate in each audio chunk."
+    parser.add_argument(
+        "--max-char-per-chunk",
+        "--max-lines-per-chunk",
+        dest="max_char_per_chunk",
+        type=int,
+        default=350,
+        help="Maximum number of characters per generated audio chunk.",
     )
     parser.add_argument("--prompt", type=str, default=CONVERSATIONAL_PROMPT)
     parser.add_argument("--prompt-text", type=str, default=DEFAULT_PROMPT_TEXT)
@@ -396,7 +423,7 @@ def main() -> None:
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Loading model from: %s", args.model_path)
+    logger.info("Loading model from: {}".format(args.model_path))
     model = MingAudio(args.model_path, device=args.device)
 
     entries = parse_scripts_file(args.scripts_file)
@@ -410,7 +437,7 @@ def main() -> None:
 
         text = build_dialogue_text(script)
         if not text:
-            logger.warning("Skipping script %s with no tts_segments", script_id)
+            logger.warning("Skipping script {} with no dialogue".format(script_id))
             continue
 
         entry = run_script_case(
@@ -427,14 +454,14 @@ def main() -> None:
             sigma=args.sigma,
             temperature=args.temperature,
             max_decode_steps=args.max_decode_steps,
-            max_lines_per_chunk=args.max_lines_per_chunk,
+            max_chars_per_chunk=args.max_char_per_chunk,
         )
         manifest.append(entry)
 
     manifest_path = output_dir / "scripts_generation_manifest.json"
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
-    logger.info("Generated %s scripts. Manifest saved to %s", len(manifest), manifest_path)
+    logger.info("Generated {} scripts. Manifest saved to {}".format(len(manifest), manifest_path))
 
 
 if __name__ == "__main__":
