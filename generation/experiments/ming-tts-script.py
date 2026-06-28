@@ -266,7 +266,7 @@ def chunk_dialogue_text(dialogue_text: str, max_chars_per_chunk: int = 800) -> L
     current_lines: List[str] = []
     current_chunk_text = ""
 
-    for line in lines:
+    for i, line in enumerate(lines) :
         if not current_lines:
             current_lines = [line]
             current_chunk_text = " " + line + "\n"
@@ -275,7 +275,7 @@ def chunk_dialogue_text(dialogue_text: str, max_chars_per_chunk: int = 800) -> L
         candidate_lines = current_lines + [line]
         candidate_text = " " + "\n ".join(candidate_lines) + "\n"
 
-        if len(candidate_text) > max_chars_per_chunk:
+        if len(candidate_text) > max_chars_per_chunk and i % 2 == 0:
             chunks.append(current_chunk_text)
             current_lines = [line]
             current_chunk_text = " " + line + "\n"
@@ -386,14 +386,14 @@ def main() -> None:
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--cfg", type=float, default=2.0)
     parser.add_argument("--sigma", type=float, default=0.25)
-    parser.add_argument("--temperature", type=float, default=0.1)
+    parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--max-decode-steps", type=int, default=260)
     parser.add_argument(
         "--max-char-per-chunk",
         "--max-lines-per-chunk",
         dest="max_char_per_chunk",
         type=int,
-        default=350,
+        default=250,
         help="Maximum number of characters per generated audio chunk.",
     )
     parser.add_argument("--prompt", type=str, default=CONVERSATIONAL_PROMPT)
