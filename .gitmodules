@@ -1,12 +1,6 @@
-[submodule "generation/models/step-auto-editx"]
-	path = generation/models/step-auto-editx
-	url = https://github.com/stepfun-ai/Step-Audio-EditX.git
-[submodule "generation/models/cosyvoice"]
-	path = generation/models/cosyvoice
-	url = https://github.com/FunAudioLLM/CosyVoice.git
-[submodule "generation/models/qwen3-tts"]
-	path = generation/models/qwen3-tts
-	url = https://github.com/QwenLM/Qwen3-TTS.git
 [submodule "generation/models/ming-omni-tts"]
 	path = generation/models/ming-omni-tts
 	url = https://github.com/inclusionAI/Ming-omni-tts.git
+[submodule "generation/models/soulx-podcast"]
+	path = generation/models/soulx-podcast
+	url = https://github.com/Soul-AILab/SoulX-Podcast.git

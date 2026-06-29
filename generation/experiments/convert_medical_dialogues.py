@@ -192,10 +192,12 @@ def main() -> None:
             )
             if args.thinking:
                 kwargs["reasoning_effort"] = "high"
+                kwargs["extra_body"]={"thinking": {"type": "enabled"}}
 
             # ----- 重试循环 -----
             success = False
             for attempt in range(1, args.max_retry + 1):
+                normalized : Dict[str, any] = {}
                 try:
                     resp = client.chat.completions.create(**kwargs)
                     content = resp.choices[0].message.content or ""
@@ -207,6 +209,7 @@ def main() -> None:
                     break  # 成功即退出重试
                 except Exception as e:
                     print(f"[WARN] line {lineno} attempt {attempt}/{args.max_retry} failed: {e}")
+                    print(f"Raw output: {content}")
                     if attempt < args.max_retry:
                         # 简单指数退避，避免频繁请求
                         wait = 2 ** (attempt - 1)

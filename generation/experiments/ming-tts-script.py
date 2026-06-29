@@ -54,6 +54,7 @@ prompt_diag = [
 ]
 DEFAULT_PROMPT_TEXT = " " + "\n ".join([f"{k}:{v}" for item in prompt_diag for k, v in item.items()]) + "\n"
 
+# modify of model loading
 class MingAudio:
     def __init__(self, model_path: str | Path, device: str = "cuda:0"):
         self.device = device
@@ -240,16 +241,19 @@ def normalize_text(text: str) -> str:
 def build_dialogue_text(script: Dict) -> str:
     segments = script.get("dialogue", [])
     lines: List[str] = []
+    
+    speaker_map = {}
+    speaker_cnt = 0
     for segment in segments:
         speaker = str(segment.get("speaker", ""))
         voice_role = str(segment.get("voice_role", ""))
         text = normalize_text(segment.get("text", ""))
         if not text:
             continue
-        if "医生" in speaker or "doctor" in speaker.lower() or "doctor" in voice_role.lower():
-            speaker_key = "speaker_2"
-        else:
-            speaker_key = "speaker_1"
+        if speaker not in speaker_map :
+            speaker_cnt += 1
+            speaker_map[speaker] = f"speaker_{speaker_cnt}"
+        speaker_key = speaker_map[speaker]
         lines.append(f"{speaker_key}:{text}")
     return " " + "\n ".join(lines) + "\n" if lines else ""
 
@@ -393,11 +397,12 @@ def main() -> None:
         "--max-lines-per-chunk",
         dest="max_char_per_chunk",
         type=int,
-        default=250,
+        default=300,
         help="Maximum number of characters per generated audio chunk.",
     )
-    parser.add_argument("--prompt", type=str, default=CONVERSATIONAL_PROMPT)
+    parser.add_argument("--prompt", type=str, default=DEFAULT_PROMPT)
     parser.add_argument("--prompt-text", type=str, default=DEFAULT_PROMPT_TEXT)
+    parser.add_argument("--sel-ids", type=lambda s : list(map(int, s.split(','))), default=None)
     args = parser.parse_args()
 
     if not args.scripts_file.exists():
@@ -428,13 +433,17 @@ def main() -> None:
 
     entries = parse_scripts_file(args.scripts_file)
     manifest: List[Dict] = []
+    
+    logger.info("selected indices: {}".format(args.sel_ids))
 
     for script in entries:
         script_id = script.get("dialogue_id") or script.get("id") or script.get("script_id")
         if script_id is None:
             logger.warning("Skipping script with missing dialogue_id")
             continue
-
+        if args.sel_ids is not None and script_id not in args.sel_ids :
+            logger.info("Skipping script {} out of selected indices.".format(script_id))
+            continue
         text = build_dialogue_text(script)
         if not text:
             logger.warning("Skipping script {} with no dialogue".format(script_id))
