@@ -1,6 +1,4 @@
 [submodule "generation/models/ming-omni-tts"]
 	path = generation/models/ming-omni-tts
 	url = https://github.com/inclusionAI/Ming-omni-tts.git
-[submodule "generation/models/soulx-podcast"]
-	path = generation/models/soulx-podcast
-	url = https://github.com/Soul-AILab/SoulX-Podcast.git
+
