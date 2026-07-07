@@ -154,7 +154,7 @@ def main() -> None:
     parser.add_argument("--base-url", default="https://api.deepseek.com", help="DeepSeek base URL")
     parser.add_argument("--api-key", default=os.getenv("DEEPSEEK_API_KEY", ""), help="DeepSeek API key")
     parser.add_argument("--thinking", action="store_true", help="Enable thinking mode (default recommended).")
-    parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument("--max-tokens", type=int, default=8192)
     parser.add_argument("--temperature", type=float, default=0.4)
     parser.add_argument("--max-retry", type=int, default=3, help="Max retries for each record conversion")
     args = parser.parse_args()
@@ -198,6 +198,7 @@ def main() -> None:
             success = False
             for attempt in range(1, args.max_retry + 1):
                 normalized : Dict[str, any] = {}
+                content : str = {}
                 try:
                     resp = client.chat.completions.create(**kwargs)
                     content = resp.choices[0].message.content or ""
