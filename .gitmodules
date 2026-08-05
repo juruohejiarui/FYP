@@ -8,3 +8,6 @@
 [submodule "generation/models/moss-tts"]
 	path = generation/models/moss-tts
 	url = https://github.com/OpenMOSS/MOSS-TTS.git
+[submodule "generation/models/moss-ttsd"]
+	path = generation/models/moss-ttsd
+	url = https://github.com/OpenMOSS/MOSS-TTSD.git

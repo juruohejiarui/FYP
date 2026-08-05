@@ -1,0 +1,47 @@
+{
+  "_description": "Gender-based reference audio mapping for TTS dialogue generation. All references from Ming-omni-TTS. speaker_1 = patient, speaker_2 = doctor.",
+  "_sources": {
+    "CTS-CN-F2F-2019-11-11-423-012-A": "Ming-omni-tts cookbook podcast example — speaker_1 (patient voice). Used in ming-tts.py and ming-tts-script.py.",
+    "CTS-CN-F2F-2019-11-11-423-012-B": "Ming-omni-tts cookbook podcast example — speaker_2 (doctor voice). Used in ming-tts.py and ming-tts-script.py.",
+    "10002287-00000094": "Ming-omni-tts cookbook zero-shot TTS example. Female voice.",
+    "10002287-00000095": "Ming-omni-tts cookbook basic TTS example. No documented prompt_text — uses speaker embedding only."
+  },
+  "male": {
+    "patient": [
+      {
+        "wav": "../../models/ming-omni-tts/data/wavs/CTS-CN-F2F-2019-11-11-423-012-A.wav",
+        "prompt_text": "并且我们还要进行每个月还要考核 笔试的话还要进行笔试，做个，当服务员还要去笔试了"
+      }
+    ],
+    "doctor": [
+      {
+        "wav": "../../models/ming-omni-tts/data/wavs/CTS-CN-F2F-2019-11-11-423-012-B.wav",
+        "prompt_text": "对啊，这真的很奇怪，就是 单纯的因，单纯自己工资不高，只是因为可能人家那个店比较出名一点，就对你苛刻要求"
+      }
+    ]
+  },
+  "female": {
+    "patient": [
+      {
+        "wav": "../../models/ming-omni-tts/data/wavs/10002287-00000094.wav",
+        "prompt_text": "在此奉劝大家别乱打美白针。"
+      }
+    ],
+    "doctor": [
+      {
+        "wav": "../../models/ming-omni-tts/data/wavs/10002287-00000095.wav",
+        "prompt_text": ""
+      }
+    ]
+  },
+  "default": {
+    "patient": {
+      "wav": "../../models/ming-omni-tts/data/wavs/CTS-CN-F2F-2019-11-11-423-012-A.wav",
+      "prompt_text": "并且我们还要进行每个月还要考核 笔试的话还要进行笔试，做个，当服务员还要去笔试了"
+    },
+    "doctor": {
+      "wav": "../../models/ming-omni-tts/data/wavs/CTS-CN-F2F-2019-11-11-423-012-B.wav",
+      "prompt_text": "对啊，这真的很奇怪，就是 单纯的因，单纯自己工资不高，只是因为可能人家那个店比较出名一点，就对你苛刻要求"
+    }
+  }
+}

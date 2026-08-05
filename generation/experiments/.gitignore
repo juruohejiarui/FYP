@@ -1,2 +1,4 @@
 /*_tests
 scripts-*.jsonl
+.env
+/intermediates

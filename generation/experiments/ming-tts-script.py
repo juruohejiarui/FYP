@@ -258,7 +258,7 @@ def build_dialogue_text(script: Dict) -> str:
     return " " + "\n ".join(lines) + "\n" if lines else ""
 
 
-def chunk_dialogue_text(dialogue_text: str, max_chars_per_chunk: int = 800) -> List[str]:
+def chunk_dialogue_text(dialogue_text: str, max_chars_per_chunk: int = -1) -> List[str]:
     if max_chars_per_chunk is None or max_chars_per_chunk <= 0:
         return [dialogue_text] if dialogue_text.strip() else []
 
@@ -320,7 +320,7 @@ def run_script_case(
     sigma: float,
     temperature: float,
     max_decode_steps: int,
-    max_chars_per_chunk: int = 800,
+    max_chars_per_chunk: int = -1,
 ) -> Dict:
     output_path = output_dir / f"{safe_name(str(script_id))}.wav"
     logger.info("Prompt Text: {}".format(prompt_text))
@@ -397,8 +397,8 @@ def main() -> None:
         "--max-lines-per-chunk",
         dest="max_char_per_chunk",
         type=int,
-        default=300,
-        help="Maximum number of characters per generated audio chunk.",
+        default=-1,
+        help="Maximum number of characters per generated audio chunk. Use -1 to disable chunking.",
     )
     parser.add_argument("--prompt", type=str, default=DEFAULT_PROMPT)
     parser.add_argument("--prompt-text", type=str, default=DEFAULT_PROMPT_TEXT)

@@ -1,2 +1,5 @@
 /models
 *.pyc
+/.claude
+/CLAUDE.md
+*.zip
