@@ -5,14 +5,19 @@ import random
 import sys
 from pathlib import Path
 
-import soundfile as sf
 import torch
-import torchaudio
 from tqdm import tqdm
-from transformers import AutoModel, AutoProcessor
 
 from ref.utils import RefEntry, get_entries, filter_entires
+from utils.moss import (
+    build_conversation,
+    build_dialogue_turns,
+    build_turn_chunks,
+    generate_chunk_wav,
+    load_model_and_processor,
+)
 from utils.script import parse
+from utils.wav_chk import get_wav_duration_seconds, is_wav_too_long, remove_wav_if_exists
 
 random.seed(42)
 
@@ -36,147 +41,32 @@ def random_select(refs: list[RefEntry], ignore: RefEntry) -> RefEntry:
             return ref
 
 
-def build_dialogue_turns(dialogue: list[dict[str, str]]) -> list[tuple[int, str]]:
-    turns: list[tuple[int, str]] = []
-    spk_map: dict[str, int] = {}
+def load_existing_manifests(manifest_jsonl_path: Path) -> dict[str, dict]:
+    manifests: dict[str, dict] = {}
+    legacy_manifest_path = manifest_jsonl_path.with_suffix(".json")
 
-    for seg in dialogue:
-        spk = str(seg.get("speaker", ""))
-        txt = seg.get("text", "")
+    if legacy_manifest_path.exists():
+        with open(legacy_manifest_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            for value in data.values():
+                if isinstance(value, dict) and "script_id" in value:
+                    manifests[str(value["script_id"])] = value
+        elif isinstance(data, list):
+            for value in data:
+                if isinstance(value, dict) and "script_id" in value:
+                    manifests[str(value["script_id"])] = value
 
-        if not txt:
-            continue
+    if manifest_jsonl_path.exists():
+        with open(manifest_jsonl_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                entry = json.loads(line)
+                manifests[str(entry["script_id"])] = entry
 
-        if spk not in spk_map:
-            spk_map[spk] = len(spk_map)
-
-        turns.append((spk_map[spk], txt))
-
-    return turns
-
-
-def build_turn_chunks(
-    turns: list[tuple[int, str]], mx_chars_per_chunk: int = -1
-) -> list[list[tuple[int, str]]]:
-    if mx_chars_per_chunk is None or mx_chars_per_chunk < 0:
-        return [turns]
-
-    chunks: list[list[tuple[int, str]]] = []
-    acc_turns: list[tuple[int, str]] = []
-    acc_lens = 0
-
-    for turn in turns:
-        acc_lens += len(turn[1])
-        acc_turns.append(turn)
-
-        if acc_lens >= mx_chars_per_chunk:
-            chunks.append(acc_turns)
-            acc_lens = 0
-            acc_turns = []
-
-    if acc_turns:
-        chunks.append(acc_turns)
-
-    return chunks
-
-
-def turns_to_text(turns: list[tuple[int, str]]) -> str:
-    return "".join(f"[S{spk + 1}]{txt}" for spk, txt in turns)
-
-
-def load_mono_wav(wav_path: str, target_sr: int) -> torch.Tensor:
-    audio, sr = sf.read(wav_path, dtype="float32", always_2d=True)
-    wav = torch.from_numpy(audio).transpose(0, 1).contiguous()
-    if wav.shape[0] > 1:
-        wav = wav.mean(dim=0, keepdim=True)
-    if sr != target_sr:
-        wav = torchaudio.functional.resample(wav, sr, target_sr)
-    return wav
-
-
-def load_model_and_processor(model_path: Path, codec_path: Path, device: str):
-    dtype = torch.bfloat16 if device.startswith("cuda") else torch.float32
-
-    processor = AutoProcessor.from_pretrained(
-        str(model_path), trust_remote_code=True, codec_path=str(codec_path)
-    )
-    if getattr(processor, "audio_tokenizer", None) is not None:
-        processor.audio_tokenizer = processor.audio_tokenizer.to(device)
-        processor.audio_tokenizer.eval()
-
-    def _load(attn_implementation: str):
-        return AutoModel.from_pretrained(
-            str(model_path),
-            trust_remote_code=True,
-            attn_implementation=attn_implementation,
-            dtype=dtype,
-        ).to(device)
-
-    if device.startswith("cuda"):
-        try:
-            model = _load("flash_attention_2")
-        except Exception as exc:
-            tqdm.write(f"[WARN] flash_attention_2 unavailable, fallback to sdpa. error={exc}")
-            model = _load("sdpa")
-    else:
-        model = _load("sdpa")
-
-    model.eval()
-    return model, processor
-
-
-def build_conversation(processor, refs: list[RefEntry], chunk_turns: list[tuple[int, str]], target_sr: int):
-    wav1 = load_mono_wav(refs[0].wav, target_sr)
-    wav2 = load_mono_wav(refs[1].wav, target_sr)
-
-    reference_audio_codes = processor.encode_audios_from_wav([wav1, wav2], sampling_rate=target_sr)
-    concat_prompt_wav = torch.cat([wav1, wav2], dim=-1)
-    prompt_audio = processor.encode_audios_from_wav([concat_prompt_wav], sampling_rate=target_sr)[0]
-
-    prompt_text = f"[S1]{refs[0].text}[S2]{refs[1].text}"
-    full_text = prompt_text + turns_to_text(chunk_turns)
-
-    return [
-        processor.build_user_message(text=full_text, reference=reference_audio_codes),
-        processor.build_assistant_message(audio_codes_list=[prompt_audio]),
-    ]
-
-
-def generate_chunk_wav(
-    model,
-    processor,
-    conversation: list[dict],
-    device: str,
-    max_new_tokens: int,
-    temperature: float,
-    top_p: float,
-    top_k: int,
-    repetition_penalty: float,
-) -> torch.Tensor:
-    batch = processor([conversation], mode="continuation")
-    input_ids = batch["input_ids"].to(device)
-    attention_mask = batch["attention_mask"].to(device)
-
-    with torch.no_grad():
-        outputs = model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=max_new_tokens,
-            audio_temperature=temperature,
-            audio_top_p=top_p,
-            audio_top_k=top_k,
-            audio_repetition_penalty=repetition_penalty,
-        )
-
-    message = processor.decode(outputs)[0]
-    wav_segments = [
-        wav.detach().to(dtype=torch.float32, device="cpu").reshape(-1)
-        for wav in message.audio_codes_list
-        if isinstance(wav, torch.Tensor)
-    ]
-    if not wav_segments:
-        raise RuntimeError("Model produced no audio for this chunk")
-    return torch.cat(wav_segments, dim=0)
+    return manifests
 
 
 def generate(
@@ -211,6 +101,7 @@ def generate(
         wav_chunks.append(wav_chunk)
 
     merged_wav = torch.cat(wav_chunks, dim=-1)
+    import soundfile as sf
     sf.write(str(output_path), merged_wav.numpy(), target_sr)
 
     return {
@@ -240,6 +131,8 @@ if __name__ == "__main__":
     parser.add_argument("--top-p", type=float, default=None)
     parser.add_argument("--top-k", type=int, default=None)
     parser.add_argument("--repetition-penalty", type=float, default=None)
+    parser.add_argument("--max-wav-seconds", type=float, default=300.0)
+    parser.add_argument("--max-regen-attempts", type=int, default=20)
     parser.add_argument(
         "--mx-char-per-chunk", type=int, default=-1,
         help="Maximum number of characters per generated audio chunk. Use -1 to disable chunking.",
@@ -260,38 +153,54 @@ if __name__ == "__main__":
 
     model, processor = load_model_and_processor(args.model_path, args.codec_model_path, device)
 
-    manifest_path = OUTPUT_DIR / "manifest.json"
-    manifests: dict[str, dict[str]] = {}
-
-    if os.path.exists(manifest_path):
-        with open(manifest_path, 'r') as f:
-            manifests = json.load(f)
+    manifest_path = OUTPUT_DIR / "manifest.jsonl"
+    manifests = load_existing_manifests(manifest_path)
 
     for script in tqdm(scripts):
+        tqdm.write(f"[SCRIPT] {script['dialogue_id']}")
         script_id = script['dialogue_id']
         if args.sel_ids is not None and script_id not in args.sel_ids:
             tqdm.write(f"Skipping script {script_id}: not in sel_ids")
             continue
 
-        # randomly select a ref for patient
-        patient_ref = random_select(
-            filter_entires(ref_ents, script['meta'].get('language', 'Chinese'), script['meta']['sex']),
-            None
-        )
-        doctor_ref = random_select(ref_ents, patient_ref)
+        attempts = 0
+        while True:
+            attempts += 1
 
-        if script['dialogue'][0]['speaker'] == '医生':
-            patient_ref, doctor_ref = doctor_ref, patient_ref
+            # randomly select a ref for patient
+            patient_ref = random_select(
+                filter_entires(ref_ents, script['meta'].get('language', 'Chinese'), script['meta']['sex']),
+                None
+            )
+            doctor_ref = random_select(ref_ents, patient_ref)
 
-        ent = generate(
-            model=model,
-            processor=processor,
-            device=device,
-            script=script,
-            refs=[patient_ref, doctor_ref],
-            args=args,
-        )
-        manifests[script['dialogue_id']] = ent
+            if script['dialogue'][0]['speaker'] == '医生':
+                patient_ref, doctor_ref = doctor_ref, patient_ref
+
+            ent = generate(
+                model=model,
+                processor=processor,
+                device=device,
+                script=script,
+                refs=[patient_ref, doctor_ref],
+                args=args,
+            )
+
+            if not is_wav_too_long(ent['wav_path'], args.max_wav_seconds):
+                manifests[str(script_id)] = ent
+                break
+
+            duration = get_wav_duration_seconds(ent['wav_path'])
+            tqdm.write(
+                f"Regenerate script {script_id}: duration {duration:.2f}s > {args.max_wav_seconds:.2f}s"
+            )
+            remove_wav_if_exists(ent['wav_path'])
+
+            if attempts >= args.max_regen_attempts:
+                raise RuntimeError(
+                    f"script {script_id} exceeds max duration after {attempts} attempts"
+                )
 
     with open(manifest_path, 'w', encoding='utf-8') as f:
-        json.dump(manifests, f, ensure_ascii=False, indent=2)
+        for entry in manifests.values():
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")

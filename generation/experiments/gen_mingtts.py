@@ -8,6 +8,7 @@ from pathlib import Path
 from tqdm import tqdm
 from utils.mingtts import MingAudio, build_dialogue_chunks, build_prompt_text
 from utils.script import parse
+from utils.wav_chk import get_wav_duration_seconds, is_wav_too_long, remove_wav_if_exists
 from ref.utils import RefEntry, get_entries, filter_entires
 
 random.seed(42)
@@ -19,6 +20,34 @@ DEFAULT_MODEL_PATH = PROJECT_ROOT / "models" / "pretrained" / "TTS" / "Ming-omni
 DEFAULT_PROMPT = "Please generate speech based on the following description.\n"
 
 os.makedirs(str(OUTPUT_DIR), exist_ok=True)
+
+
+def load_existing_manifests(manifest_jsonl_path: Path) -> dict[str, dict]:
+    manifests: dict[str, dict] = {}
+    legacy_manifest_path = manifest_jsonl_path.with_suffix(".json")
+
+    if legacy_manifest_path.exists():
+        with open(legacy_manifest_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            for value in data.values():
+                if isinstance(value, dict) and "script_id" in value:
+                    manifests[str(value["script_id"])] = value
+        elif isinstance(data, list):
+            for value in data:
+                if isinstance(value, dict) and "script_id" in value:
+                    manifests[str(value["script_id"])] = value
+
+    if manifest_jsonl_path.exists():
+        with open(manifest_jsonl_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                entry = json.loads(line)
+                manifests[str(entry["script_id"])] = entry
+
+    return manifests
 
 def random_select(refs : list[RefEntry], ignore : RefEntry) -> RefEntry :
     while True :
@@ -75,7 +104,7 @@ def generate(model : MingAudio,
             "sigma": sigma,
             "temperature": temperature,
             "max_decode_steps": mx_decode_steps,
-            "chunks": len(chunk_txt),
+            "chunks": len(chunks),
             "max_chars_per_chunk": mx_chars_per_chunks
         }
     }
@@ -90,6 +119,8 @@ if __name__ == "__main__" :
     parser.add_argument("--sigma", type=float, default=0.25)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--mx-decode-steps", type=int, default=1000)
+    parser.add_argument("--max-wav-seconds", type=float, default=300.0)
+    parser.add_argument("--max-regen-attempts", type=int, default=20)
     parser.add_argument(
         "--mx-char-per-chunk", type=int, default=100,
         help="Maximum number of characters per generated audio chunk. Use -1 to disable chunking.",
@@ -97,19 +128,14 @@ if __name__ == "__main__" :
     parser.add_argument("--sel-ids", type=lambda s : list(map(int, s.split(','))), default=None)
     args = parser.parse_args()
 
-    print(args.mx_char_per_chunk)
     ref_ents = get_entries()
     
     scripts : list[dict[str, dict | list]]= parse(args.scripts)
     
     model = MingAudio(args.model_path)
     
-    manifest_path = OUTPUT_DIR / "manifest.json"
-    manifests : dict[str, dict[str]] = {}
-    
-    if os.path.exists(manifest_path) :
-        with open(manifest_path, 'r') as f :
-            manifests = json.load(f)
+    manifest_path = OUTPUT_DIR / "manifest.jsonl"
+    manifests = load_existing_manifests(manifest_path)
     
     for script in tqdm(scripts) :
         script_id = script['dialogue_id']
@@ -117,29 +143,48 @@ if __name__ == "__main__" :
             tqdm.write(f"Skipping script {script_id}: not in sel_ids")
             continue
                 
-        # randomly select a ref for patient
-        patient_ref = random_select(
-            filter_entires(ref_ents, script['meta'].get('language', 'Chinese'), script['meta']['sex']),
-            None
-        )
-        doctor_ref = random_select(ref_ents, patient_ref)
-        
-        if script['dialogue'][0]['speaker'] == '医生' :
-            patient_ref, doctor_ref = doctor_ref, patient_ref
-        
-        ent = generate(
-            model=model,
-            script=script,
-            prompt=args.prompt,
-            refs=[patient_ref, doctor_ref],
-            cfg=args.cfg,
-            sigma=args.sigma,
-            temperature=args.temperature,
-            mx_decode_steps=args.mx_decode_steps,
-            mx_chars_per_chunks=args.mx_char_per_chunk
-        )
-        manifests[script['dialogue_id']] = ent
+        attempts = 0
+        while True:
+            attempts += 1
+
+            # randomly select a ref for patient
+            patient_ref = random_select(
+                filter_entires(ref_ents, script['meta'].get('language', 'Chinese'), script['meta']['sex']),
+                None
+            )
+            doctor_ref = random_select(ref_ents, patient_ref)
+
+            if script['dialogue'][0]['speaker'] == '医生' :
+                patient_ref, doctor_ref = doctor_ref, patient_ref
+
+            ent = generate(
+                model=model,
+                script=script,
+                prompt=args.prompt,
+                refs=[patient_ref, doctor_ref],
+                cfg=args.cfg,
+                sigma=args.sigma,
+                temperature=args.temperature,
+                mx_decode_steps=args.mx_decode_steps,
+                mx_chars_per_chunks=args.mx_char_per_chunk
+            )
+
+            if not is_wav_too_long(ent['wav_path'], args.max_wav_seconds):
+                manifests[str(script_id)] = ent
+                break
+
+            duration = get_wav_duration_seconds(ent['wav_path'])
+            tqdm.write(
+                f"Regenerate script {script_id}: duration {duration:.2f}s > {args.max_wav_seconds:.2f}s"
+            )
+            remove_wav_if_exists(ent['wav_path'])
+
+            if attempts >= args.max_regen_attempts:
+                raise RuntimeError(
+                    f"script {script_id} exceeds max duration after {attempts} attempts"
+                )
         
     with open(manifest_path, 'w', encoding='utf-8') as f :
-        json.dump(manifests, f, ensure_ascii=False, indent=2)
+        for entry in manifests.values() :
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     
