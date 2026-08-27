@@ -65,7 +65,6 @@ def normalize_turn(turn: Dict[str, Any]) -> Optional[Dict[str, str]]:
 
     return {"speaker": speaker, "text": text}
 
-
 def extract_dialogue(item: Dict[str, Any]) -> List[Dict[str, str]]:
     # Primary source in your examples.
     segs = item.get("tts_segments") or []
@@ -82,7 +81,7 @@ def extract_dialogue(item: Dict[str, Any]) -> List[Dict[str, str]]:
             return turns
 
     # Fallback: some datasets may already have dialogue/turns fields.
-    for key in ("dialogue", "turns", "conversation", "messages"):
+    for key in ("dialogue", "turns", "conversation", "messages", "raw_turns"):
         value = item.get(key)
         if isinstance(value, list) and value:
             for seg in value:
@@ -141,7 +140,7 @@ def main() -> None:
                     continue
                 cleaned = clean_item(item)
                 # Skip empty dialogues.
-                if not cleaned["dialogue"]:
+                if not cleaned["dialogue"] and not cleaned['raw_turns']:
                     skipped += 1
                     continue
                 fout.write(json.dumps(cleaned, ensure_ascii=False) + "\n")

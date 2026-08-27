@@ -1,4 +1,6 @@
 /*_tests
 scripts-*.jsonl
+/data/ref/*.wav
+/data/ref/*.json
 .env
 /intermediates
