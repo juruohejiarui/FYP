@@ -42,7 +42,7 @@ def generate(model : MingAudio,
     chunks = build_dialogue_chunks(script['dialogue'], mx_chars_per_chunks)
     
     ref_wavs = [ref.wav for ref in refs]
-    ref_text = build_prompt_text([{f"speaker_{idx}": ref.text} for idx, ref in enumerate(refs)])
+    ref_text = build_prompt_text([{f"speaker_{idx}": ref.text} for idx, ref in enumerate(refs, 1)])
     
     wav_chunks : list[torch.Tensor] = []
     for chunk_idx, chunk_txt in enumerate(chunks) :
@@ -89,14 +89,15 @@ if __name__ == "__main__" :
     parser.add_argument("--cfg", type=float, default=2.0)
     parser.add_argument("--sigma", type=float, default=0.25)
     parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--mx-decode-steps", type=int, default=260)
+    parser.add_argument("--mx-decode-steps", type=int, default=1000)
     parser.add_argument(
-        "--mx-char-per-chunk", type=int, default=300,
+        "--mx-char-per-chunk", type=int, default=100,
         help="Maximum number of characters per generated audio chunk. Use -1 to disable chunking.",
     )
     parser.add_argument("--sel-ids", type=lambda s : list(map(int, s.split(','))), default=None)
     args = parser.parse_args()
-    
+
+    print(args.mx_char_per_chunk)
     ref_ents = get_entries()
     
     scripts : list[dict[str, dict | list]]= parse(args.scripts)
@@ -123,7 +124,8 @@ if __name__ == "__main__" :
         )
         doctor_ref = random_select(ref_ents, patient_ref)
         
-        print(patient_ref, doctor_ref)
+        if script['dialogue'][0]['speaker'] == '医生' :
+            patient_ref, doctor_ref = doctor_ref, patient_ref
         
         ent = generate(
             model=model,

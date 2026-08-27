@@ -10,7 +10,7 @@ def name(meta : dict[str, str]) -> str :
 
 def generate(audio : AudioSegment, chunks : list[tuple[float, float, str]]) -> tuple[AudioSegment, str]:
     output = AudioSegment.empty()
-    silence = AudioSegment.silent(duration=200)
+    silence = AudioSegment.silent(duration=120)
     
     text = ""
     
@@ -24,7 +24,7 @@ def generate(audio : AudioSegment, chunks : list[tuple[float, float, str]]) -> t
         output += seg
         output += silence
     
-    return output[:-200], text
+    return output, text
         
 def export(audio : AudioSegment, meta : dict[str, str]) :
     audio.export(str(REF_DIR / name(meta)) + ".wav", format='wav')
@@ -77,5 +77,4 @@ def filter_entires(refs : list[RefEntry], language : str | None = None, gender :
                 and (gender is None or ref.gender in [GENDER_MAP.get(gender, None), gender]) :
             filtered_refs.append(ref)
             
-    print(f"gender:{gender} language:{language}->{len(filtered_refs)}")
     return filtered_refs

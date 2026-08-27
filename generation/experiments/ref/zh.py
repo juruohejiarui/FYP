@@ -29,12 +29,12 @@ for txt_name in tqdm(txt_lst) :
     with open(txt_path, 'r') as f :
         lines = f.readlines()
         
-    for idx, line in enumerate(lines) :        
+    for idx, line in enumerate(lines[2:], start=2) :        
         chunk, rid, gender, text = map(str.strip, line.split('\t'))
         
         st, ed = map(float, chunk[1 : -1].split(','))
         
-        if rid == '0' or gender == 'none' or '[' in text or '+' in text or len(text) == 0: continue
+        if rid == '0' or gender == 'none' or '[' in text or '+' in text or len(text) < 4: continue
 
         if text[-1] not in ['。', '？', '！'] : text += "。"
         
