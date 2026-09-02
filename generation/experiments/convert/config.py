@@ -9,7 +9,6 @@ temperature settings.
 
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,7 +21,6 @@ from openai import AsyncOpenAI, OpenAI
 # ---------------------------------------------------------------------------
 
 THIS_DIR = Path(__file__).resolve().parent
-DEFAULT_AUDIO_CONFIG = THIS_DIR / "convert.json"
 _ENV_FILE = THIS_DIR / ".env"
 
 
@@ -68,7 +66,7 @@ PROVIDER_REGISTRY: Dict[str, Dict[str, Any]] = {
     },
     "qwen": {
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "default_model": "qwen-plus",
+        "default_model": "qwen3.8-flash",
         "supports_json_mode_with_thinking": False,
         "thinking_param": "extra_body.enable_thinking",
     },
@@ -95,6 +93,9 @@ class StageRoleConfig:
 # max_tokens=8192 because thinking mode easily consumes 3000+ tokens
 # on reasoning, leaving insufficient room for the actual response at 4096.
 STAGE_DEFAULTS: Dict[str, StageRoleConfig] = {
+    "stage0_meta_inference": StageRoleConfig(
+        temperature=0.1, thinking_effort="low", max_tokens=8192, label="Meta Inference"
+    ),
     "stage1_fact_lock": StageRoleConfig(
         temperature=0.2, thinking_effort="high", max_tokens=32768, label="Fact Lock"
     ),
@@ -145,10 +146,6 @@ class PipelineConfig:
     sel_ids: Optional[List[int]] = None
     save_intermediates: bool = False
     intermediates_dir: Optional[Path] = None
-
-    # Audio config
-    audio_config_path: Path = DEFAULT_AUDIO_CONFIG
-    audio_map: Dict[str, Any] = field(default_factory=dict)
 
     # Per-stage overrides (keyed by stage name)
     stage_overrides: Dict[str, StageRoleConfig] = field(default_factory=dict)
@@ -232,12 +229,6 @@ def create_config_from_args(args: Any) -> PipelineConfig:
                 stage_overrides[stage] = StageRoleConfig()
             stage_overrides[stage].temperature = float(temp)
 
-    # Load audio config
-    audio_config_path = Path(
-        getattr(args, "audio_config", None) or DEFAULT_AUDIO_CONFIG
-    )
-    audio_map = load_audio_config(audio_config_path)
-
     # Intermediates directory
     intermediates_dir = None
     if getattr(args, "save_intermediates", False):
@@ -263,33 +254,5 @@ def create_config_from_args(args: Any) -> PipelineConfig:
         sel_ids=args.sel_ids,
         save_intermediates=bool(getattr(args, "save_intermediates", False)),
         intermediates_dir=intermediates_dir,
-        audio_config_path=audio_config_path,
-        audio_map=audio_map,
         stage_overrides=stage_overrides,
     )
-
-
-# ---------------------------------------------------------------------------
-# Audio config loader
-# ---------------------------------------------------------------------------
-
-def load_audio_config(path: Path) -> Dict[str, Any]:
-    """Load and validate the convert.json audio reference config."""
-    if not path.exists():
-        raise FileNotFoundError(f"Audio config not found: {path}")
-
-    with open(path, "r", encoding="utf-8") as f:
-        config = json.load(f)
-
-    # Validate structure
-    for key in ("male", "female", "default"):
-        if key not in config:
-            raise ValueError(f"Audio config missing required key: '{key}'")
-        entry = config[key]
-        for role in ("patient", "doctor"):
-            if role not in entry:
-                raise ValueError(
-                    f"Audio config '{key}' missing required role: '{role}'"
-                )
-
-    return config

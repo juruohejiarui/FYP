@@ -2,16 +2,13 @@ import argparse
 import json
 import os
 import torch
-import random
 from pathlib import Path
 from tqdm import tqdm
 from utils.soulx import SoulxAudio, build_dialogue_turns, build_turn_chunks
 from utils.script import parse
 from utils.wav_chk import get_wav_duration_seconds, is_wav_too_long, remove_wav_if_exists
-from ref.utils import RefEntry, get_entries, filter_entires
+from ref.utils import RefEntry, get_entries, select_patient_doctor_refs
 from soulxpodcast.config import SamplingParams
-
-random.seed(42)
 
 OUTPUT_DIR = Path(__file__).parent / "data" / "audio" / "soulx"
 PROJECT_ROOT = Path(__file__).parents[2]
@@ -46,14 +43,6 @@ def load_existing_manifests(manifest_jsonl_path: Path) -> dict[str, dict]:
                 manifests[str(entry["script_id"])] = entry
 
     return manifests
-
-
-def random_select(refs: list[RefEntry], ignore: RefEntry) -> RefEntry:
-    while True:
-        idx = random.randint(0, len(refs) - 1)
-        ref = refs[idx]
-        if ref != ignore:
-            return ref
 
 
 def generate(
@@ -155,12 +144,7 @@ if __name__ == "__main__":
         while True:
             attempts += 1
 
-            # randomly select a ref for patient
-            patient_ref = random_select(
-                filter_entires(ref_ents, script['meta'].get('language', 'Chinese'), script['meta']['sex']),
-                None
-            )
-            doctor_ref = random_select(ref_ents, patient_ref)
+            patient_ref, doctor_ref = select_patient_doctor_refs(ref_ents, script.get('meta'))
 
             if script['dialogue'][0]['speaker'] == '医生':
                 patient_ref, doctor_ref = doctor_ref, patient_ref

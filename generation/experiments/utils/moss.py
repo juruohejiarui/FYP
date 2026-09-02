@@ -149,3 +149,46 @@ def generate_chunk_wav(
     if not wav_segments:
         raise RuntimeError("Model produced no audio for this chunk")
     return torch.cat(wav_segments, dim=0)
+
+
+def generate_chunk_wavs(
+    model,
+    processor,
+    conversations: list[list[dict]],
+    device: str,
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+    top_k: int,
+    repetition_penalty: float,
+) -> list[torch.Tensor]:
+    if not conversations:
+        return []
+
+    batch = processor(conversations, mode="continuation")
+    input_ids = batch["input_ids"].to(device)
+    attention_mask = batch["attention_mask"].to(device)
+
+    with torch.no_grad():
+        outputs = model.generate(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_new_tokens=max_new_tokens,
+            audio_temperature=temperature,
+            audio_top_p=top_p,
+            audio_top_k=top_k,
+            audio_repetition_penalty=repetition_penalty,
+        )
+
+    messages = processor.decode(outputs)
+    wavs: list[torch.Tensor] = []
+    for message in messages:
+        wav_segments = [
+            wav.detach().to(dtype=torch.float32, device="cpu").reshape(-1)
+            for wav in message.audio_codes_list
+            if isinstance(wav, torch.Tensor)
+        ]
+        if not wav_segments:
+            raise RuntimeError("Model produced no audio for one sample in batch")
+        wavs.append(torch.cat(wav_segments, dim=0))
+    return wavs

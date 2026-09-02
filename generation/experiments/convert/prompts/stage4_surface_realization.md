@@ -457,7 +457,7 @@
   "meta": {
     "sex": <原值>,
     "age": <原值>,
-    "language": "Chinese"
+    "language": <沿用输入meta.language，若输入缺失则保持缺失>
   },
   "dialogue": [
     {"speaker": "患者", "text": "自然口语"},

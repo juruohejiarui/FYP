@@ -2,15 +2,22 @@ from pydub import AudioSegment
 from pathlib import Path
 import json
 import os
+import random
 
 REF_DIR = Path(__file__).parents[1] / "data" / "ref"
+
+# Speech-friendly peak targets:
+# - If the clip peak is below -12 dBFS, boost it.
+# - Boost until peak reaches -6 dBFS.
+MIN_PEAK_DBFS = -12.0
+TARGET_PEAK_DBFS = -6.0
 
 def name(meta : dict[str, str]) -> str :
     return f"{meta['language']}_{meta['gender']}_{meta['id']}"
 
 def generate(audio : AudioSegment, chunks : list[tuple[float, float, str]]) -> tuple[AudioSegment, str]:
     output = AudioSegment.empty()
-    silence = AudioSegment.silent(duration=120)
+    silence = AudioSegment.silent(duration=0)
     
     text = ""
     
@@ -25,8 +32,32 @@ def generate(audio : AudioSegment, chunks : list[tuple[float, float, str]]) -> t
         output += silence
     
     return output, text
+
+
+def amplify_if_too_quiet(
+    audio: AudioSegment,
+    min_peak_dbfs: float = MIN_PEAK_DBFS,
+    target_peak_dbfs: float = TARGET_PEAK_DBFS,
+) -> AudioSegment:
+    """Boost audio only when peak level is too low.
+
+    pydub peak uses dBFS where 0 is full scale and lower values are quieter.
+    """
+    if len(audio) == 0:
+        return audio
+
+    peak_dbfs = audio.max_dBFS
+    if peak_dbfs == float("-inf"):
+        return audio
+
+    if peak_dbfs < min_peak_dbfs:
+        gain_db = target_peak_dbfs - peak_dbfs
+        return audio.apply_gain(gain_db)
+
+    return audio
         
 def export(audio : AudioSegment, meta : dict[str, str]) :
+    audio = amplify_if_too_quiet(audio)
     audio.export(str(REF_DIR / name(meta)) + ".wav", format='wav')
     
     with open(str(REF_DIR / name(meta)) + ".json", 'w') as f :
@@ -78,3 +109,23 @@ def filter_entires(refs : list[RefEntry], language : str | None = None, gender :
             filtered_refs.append(ref)
             
     return filtered_refs
+
+
+def select_patient_doctor_refs(refs: list[RefEntry], meta: dict[str, str] | None = None) -> tuple[RefEntry, RefEntry]:
+    meta = meta or {}
+    language = meta.get("language")
+    patient_gender = meta.get("sex") or meta.get("gender")
+
+    patient_pool = filter_entires(refs, language=language, gender=patient_gender) or refs
+    patient_ref = random.choice(patient_pool)
+
+    doctor_gender = "男" if random.random() < 0.8 else "女"
+    doctor_pool = (
+        filter_entires(refs, language=language, gender=doctor_gender)
+        or filter_entires(refs, gender=doctor_gender)
+        or refs
+    )
+    doctor_candidates = [ref for ref in doctor_pool if ref != patient_ref] or doctor_pool
+    doctor_ref = random.choice(doctor_candidates)
+
+    return patient_ref, doctor_ref
