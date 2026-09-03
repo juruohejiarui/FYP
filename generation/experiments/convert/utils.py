@@ -161,10 +161,11 @@ async def async_call_llm(
     kwargs: Dict[str, Any] = {
         "model": model,
         "messages": messages,
-        "max_tokens": max_tokens,
+        "max_completion_tokens" if provider == "doubao" else "max_tokens": 
+            max_tokens
     }
 
-    if provider == "deepseek":
+    if provider in ["deepseek", "doubao"] :
         kwargs["temperature"] = temperature
         if thinking_enabled:
             kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
@@ -194,7 +195,7 @@ async def async_call_llm(
             raise EmptyResponseError(f"Empty content (finish_reason={finish_reason})")
         return content
 
-    if provider == "qwen":
+    elif provider in ["qwen"] :
         if thinking_enabled:
             kwargs["stream"] = True
             kwargs["temperature"] = max(temperature, 1.0)
@@ -293,10 +294,10 @@ async def async_stage_llm_call(
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": user_content})
 
-    tqdm.write(
-        f"[{stage_cfg.label}] model={model} effort={stage_cfg.thinking_effort} "
-        f"temp={stage_cfg.temperature}"
-    )
+    # tqdm.write(
+    #     f"[{stage_cfg.label}] model={model} effort={stage_cfg.thinking_effort} "
+    #     f"temp={stage_cfg.temperature}"
+    # )
 
     return await async_call_llm_structured(
         messages=messages,

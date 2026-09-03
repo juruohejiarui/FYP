@@ -97,13 +97,13 @@ STAGE_DEFAULTS: Dict[str, StageRoleConfig] = {
         temperature=0.1, thinking_effort="low", max_tokens=8192, label="Meta Inference"
     ),
     "stage1_fact_lock": StageRoleConfig(
-        temperature=0.2, thinking_effort="high", max_tokens=32768, label="Fact Lock"
+        temperature=0.2, thinking_effort="medium", max_tokens=32768, label="Fact Lock"
     ),
     "stage2_scene_adaptation": StageRoleConfig(
         temperature=0.2, thinking_effort="high", max_tokens=32768, label="Scene Adaptation"
     ),
     "stage3_turn_planning": StageRoleConfig(
-        temperature=0.2, thinking_effort="high", max_tokens=32768, label="Turn Planning"
+        temperature=0.2, thinking_effort="max", max_tokens=32768, label="Turn Planning"
     ),
     "stage4_surface_realization": StageRoleConfig(
         temperature=0.5, thinking_effort="max", max_tokens=32768, label="Surface Realization"
