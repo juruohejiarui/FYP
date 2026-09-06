@@ -2,5 +2,5 @@
 scripts-*.jsonl
 /data/ref/*.wav
 /data/ref/*.json
+/data/convert
 .env
-/intermediates

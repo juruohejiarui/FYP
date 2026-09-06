@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""B-mode clinical-constraint-to-transcript conversion pipeline.
+"""convert_v2 planner–generator conversion pipeline.
 
-The source dialogue is visible only to meta inference and clinical-brief
-extraction. Every later stage receives abstractions, never the source wording
-or its turn order. This prevents the old A-mode pattern: copying online chat
-and merely adding oral fillers.
+Source wording is visible to meta inference, the clinical contract, and a
+compact Stage 3 / Stage 3 repair reference. Later stages otherwise receive
+previous stage text as-is and are not parsed in code.
+Only the writer and judge return JSON for TTS/ASR output.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set
@@ -28,20 +29,30 @@ MAX_REPAIR_ATTEMPTS = 2
 MISSING = {"", "none", "null", "unknown", "unk", "n/a", "na", "未知"}
 STAGES = (
     "stage0_meta_inference",
-    "stage1_clinical_brief",
-    "stage2_encounter_director",
-    "stage3_spoken_performance_plan",
-    "stage4_surface_generation",
-    "stage5_clinical_naturalness_judge",
+    "stage1_clinical_contract",
+    "stage2_encounter_plan",
+    "stage3_spoken_base",
+    "stage4_disfluency_plan",
+    "stage5_surface_generation",
+    "stage6_validator",
 )
-REPAIR_STAGE = "stage4_surface_repair"
+REPAIR_STAGE = "stage5_surface_repair"
+STRUCTURAL_REPAIR_STAGES = {
+    "contract": "stage1_clinical_contract_repair",
+    "plan": "stage2_encounter_plan_repair",
+    "spoken_base": "stage3_spoken_base_repair",
+}
 SYSTEM = {
     "stage0_meta_inference": "Infer missing metadata only. Return one JSON object.",
-    "stage1_clinical_brief": "Extract clinical constraints only. Return one JSON object.",
-    "stage2_encounter_director": "Direct a new offline encounter from constraints only. Return one JSON object.",
-    "stage3_spoken_performance_plan": "Plan spoken interactions from abstractions only. Return one JSON object.",
-    "stage4_surface_generation": "Write a fresh Chinese outpatient transcript. Return one JSON object.",
-    "stage5_clinical_naturalness_judge": "Audit clinical constraints and transcript naturalness. Return one JSON object.",
+    "stage1_clinical_contract": "Extract a clinical contract only. Return one [CLINICAL_CONTRACT] block.",
+    "stage2_encounter_plan": "Direct a new offline encounter from the contract. Return one [ENCOUNTER_PLAN] block.",
+    "stage3_spoken_base": "Write a fluent spoken base from the contract and plan. Return one [SPOKEN_BASE] block.",
+    "stage4_disfluency_plan": "Plan local disfluency only. Return one [DISFLUENCY_PLAN] block.",
+    "stage5_surface_generation": "Realize the disfluency plan as a Chinese outpatient transcript. Return one JSON object.",
+    "stage6_validator": "Audit clinical constraints and transcript naturalness. Return one JSON object.",
+    "stage1_clinical_contract_repair": "Repair the clinical contract only. Return one [CLINICAL_CONTRACT] block.",
+    "stage2_encounter_plan_repair": "Repair the encounter plan only. Return one [ENCOUNTER_PLAN] block.",
+    "stage3_spoken_base_repair": "Repair the spoken base only. Return one [SPOKEN_BASE] block.",
 }
 
 
@@ -52,7 +63,7 @@ def load_prompt_book(path: Path) -> Dict[str, str]:
         name, separator, body = chunk.partition(" -->")
         if separator:
             prompts[name.strip()] = body.strip()
-    required = set(STAGES) | {REPAIR_STAGE}
+    required = set(STAGES) | {REPAIR_STAGE} | set(STRUCTURAL_REPAIR_STAGES.values())
     missing_stages = sorted(required - prompts.keys())
     if missing_stages:
         raise ValueError(
@@ -66,8 +77,8 @@ def resolve_prompt_path(requested: Optional[str]) -> Path:
         return Path(requested)
     package_dir = Path(__file__).resolve().parent
     candidates = (
-        package_dir / "prompts" / "v4_complete.md",
-        package_dir / "v4_complete.md",
+        package_dir / "prompts" / "v5_complete.md",
+        package_dir / "v5_complete.md",
     )
     return next((path for path in candidates if path.exists()), candidates[0])
 
@@ -148,7 +159,6 @@ def merge_meta(
 
 
 def output_identity(context: Dict[str, Any]) -> Dict[str, Any]:
-    """Identity sent to the writer; it deliberately contains no source turns."""
     return {
         "dialogue_id": context["dialogue_id"],
         "source": context["source"],
@@ -156,43 +166,147 @@ def output_identity(context: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def stage_payload(stage: str, context: Dict[str, Any]) -> Dict[str, Any]:
-    """Return exactly the information each B-mode stage is allowed to see."""
-    if stage in {"stage0_meta_inference", "stage1_clinical_brief"}:
-        return context["record"]
-    if stage == "stage2_encounter_director":
-        return {
-            "meta": context["record"].get("meta", {}),
-            "clinical_brief": context["clinical_brief"],
-        }
-    if stage == "stage3_spoken_performance_plan":
-        return {
-            "meta": context["record"].get("meta", {}),
-            "clinical_brief": context["clinical_brief"],
-            "encounter_director": context["encounter_director"],
-        }
-    if stage == "stage4_surface_generation":
-        payload: Dict[str, Any] = {
-            "output_identity": output_identity(context),
-            "clinical_brief": context["clinical_brief"],
-            "encounter_director": context["encounter_director"],
-            "spoken_performance_plan": context["spoken_performance_plan"],
-        }
-        if context.get("repair_targets"):
-            payload.update(
-                {
-                    "repair_mode": True,
-                    "previous_dialogue": context["dialogue"],
-                    "repair_targets": context["repair_targets"],
-                }
+def _join_blocks(*blocks: str) -> str:
+    return "\n\n".join(block.strip() for block in blocks if block and block.strip())
+
+
+_SPEAKER_ABBREV = {
+    "患者": "患",
+    "医生": "医",
+    "陪诊者": "陪",
+}
+
+
+def compact_source_turns(record: Dict[str, Any]) -> str:
+    """Render original turns as compact speaker|text lines, not JSON."""
+    lines = ["[SOURCE_TURNS]"]
+    for turn in record.get("dialogue") or []:
+        text = re.sub(r"\s+", " ", str(turn.get("text") or "")).strip()
+        if not text:
+            continue
+        speaker = str(turn.get("speaker") or "").strip()
+        speaker = _SPEAKER_ABBREV.get(speaker, speaker)
+        if not speaker:
+            continue
+        lines.append(f"{speaker} | {text}")
+    lines.append("[/SOURCE_TURNS]")
+    return "\n".join(lines)
+
+
+def _source_turns_block(context: Dict[str, Any]) -> str:
+    return (
+        "## Source turns (reference only)\n"
+        + compact_source_turns(context["record"])
+    )
+
+
+def stage_user_content(
+    stage: str,
+    context: Dict[str, Any],
+    prompt_body: str,
+) -> str:
+    """Assemble the user message: stage prompt plus previous outputs as raw text."""
+    if stage in {"stage0_meta_inference", "stage1_clinical_contract"}:
+        payload = (
+            "## Input JSON\n```json\n"
+            + json.dumps(context["record"], ensure_ascii=False)
+            + "\n```"
+        )
+        return prompt_body + "\n\n" + payload
+
+    if stage == "stage2_encounter_plan":
+        prior = "## Previous stage output\n" + context["clinical_contract"]
+        return prompt_body + "\n\n" + prior
+
+    if stage == "stage3_spoken_base":
+        prior = "## Previous stage outputs\n" + _join_blocks(
+            context["clinical_contract"],
+            context["encounter_plan"],
+        )
+        return prompt_body + "\n\n" + prior + "\n\n" + _source_turns_block(context)
+
+    if stage == "stage4_disfluency_plan":
+        prior = "## Previous stage outputs\n" + _join_blocks(
+            context["clinical_contract"],
+            context["encounter_plan"],
+            context["spoken_base"],
+        )
+        return prompt_body + "\n\n" + prior
+
+    if stage in STRUCTURAL_REPAIR_STAGES.values():
+        repair_scope = next(
+            scope for scope, repair_stage in STRUCTURAL_REPAIR_STAGES.items()
+            if repair_stage == stage
+        )
+        previous_key = {
+            "contract": "clinical_contract",
+            "plan": "encounter_plan",
+            "spoken_base": "spoken_base",
+        }[repair_scope]
+        prior_blocks = []
+        if repair_scope in {"plan", "spoken_base"}:
+            prior_blocks.append(context["clinical_contract"])
+        if repair_scope == "spoken_base":
+            prior_blocks.append(context["encounter_plan"])
+        targets = [
+            target for target in context["repair_targets"]
+            if target.get("scope") == repair_scope
+        ]
+        original_input = ""
+        if repair_scope == "contract":
+            original_input = (
+                "\n\n## Original input JSON\n```json\n"
+                + json.dumps(context["record"], ensure_ascii=False)
+                + "\n```"
             )
-        return payload
-    return {
-        "generated_dialogue": context["dialogue"],
-        "clinical_brief": context["clinical_brief"],
-        "encounter_director": context["encounter_director"],
-        "spoken_performance_plan": context["spoken_performance_plan"],
-    }
+        elif repair_scope == "spoken_base":
+            original_input = "\n\n" + _source_turns_block(context)
+        return (
+            prompt_body
+            + "\n\n## Previous stage outputs\n"
+            + _join_blocks(*prior_blocks)
+            + "\n\n## Previous target block\n"
+            + context[previous_key]
+            + "\n\n## Structural repair targets\n```json\n"
+            + json.dumps(targets, ensure_ascii=False)
+            + "\n```"
+            + original_input
+        )
+
+    identity = (
+        "## Output identity JSON\n```json\n"
+        + json.dumps(output_identity(context), ensure_ascii=False)
+        + "\n```"
+    )
+    plans = "## Previous stage outputs\n" + _join_blocks(
+        context["clinical_contract"],
+        context["encounter_plan"],
+        context["spoken_base"],
+        context["disfluency_plan"],
+    )
+    if stage == "stage5_surface_generation":
+        extra = ""
+        if context.get("repair_targets"):
+            extra = (
+                "\n\n## Repair mode\n```json\n"
+                + json.dumps(
+                    {
+                        "repair_mode": True,
+                        "previous_dialogue": context["dialogue"],
+                        "repair_targets": context["repair_targets"],
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n```"
+            )
+        return prompt_body + "\n\n" + identity + "\n\n" + plans + extra
+
+    generated = (
+        "## Generated dialogue JSON\n```json\n"
+        + json.dumps(context["dialogue"], ensure_ascii=False)
+        + "\n```"
+    )
+    return prompt_body + "\n\n" + identity + "\n\n" + plans + "\n\n" + generated
 
 
 async def run_stage(
@@ -203,15 +317,10 @@ async def run_stage(
     prompts: Dict[str, str],
     intermediates: Dict[str, Any],
     saved_name: str,
-) -> Dict[str, Any]:
-    is_repair = stage == "stage4_surface_generation" and context.get("repair_targets")
+) -> Any:
+    is_repair = stage == "stage5_surface_generation" and context.get("repair_targets")
     prompt_key = REPAIR_STAGE if is_repair else stage
-    user_content = (
-        prompts[prompt_key]
-        + "\n\n## Input JSON\n```json\n"
-        + json.dumps(stage_payload(stage, context), ensure_ascii=False)
-        + "\n```"
-    )
+    user_content = stage_user_content(stage, context, prompts[prompt_key])
     tqdm.write(f"[{context['dialogue_id']}] {stage}")
     result = await async_stage_llm_call(
         stage,
@@ -229,7 +338,7 @@ async def async_run_pipeline(
     config: PipelineConfig,
     prompt_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Convert one source record through the strictly separated B-mode stages."""
+    """Convert one source record through convert_v2 stages."""
     prompts = load_prompt_book(prompt_path or resolve_prompt_path(None))
     prepared, meta_base, missing_flags = prepare_record(record)
     dialogue_id = prepared.get("dialogue_id") or prepared.get("id") or "unknown"
@@ -243,84 +352,130 @@ async def async_run_pipeline(
     client = config.create_async_client()
 
     if any(missing_flags):
-        inferred = await run_stage(
-            "stage0_meta_inference",
-            context,
-            config,
-            client,
-            prompts,
-            intermediates,
-            "stage0_meta_inference",
+        inferred = await run_stage("stage0_meta_inference", 
+                                   context, config, client, prompts, intermediates,
+                                   "stage0_meta_inference",
         )
         context["record"]["meta"] = merge_meta(meta_base, inferred, missing_flags)
 
-    context["clinical_brief"] = await run_stage(
-        "stage1_clinical_brief",
-        context,
-        config,
-        client,
-        prompts,
-        intermediates,
-        "stage1_clinical_brief",
+    context["clinical_contract"] = await run_stage(
+        "stage1_clinical_contract",
+        context, config, client, prompts, intermediates,
+        "stage1_clinical_contract",
     )
-    context["encounter_director"] = await run_stage(
-        "stage2_encounter_director",
-        context,
-        config,
-        client,
-        prompts,
-        intermediates,
-        "stage2_encounter_director",
+    context["encounter_plan"] = await run_stage(
+        "stage2_encounter_plan",
+        context, config, client, prompts, intermediates,
+        "stage2_encounter_plan",
     )
-    context["spoken_performance_plan"] = await run_stage(
-        "stage3_spoken_performance_plan",
-        context,
-        config,
-        client,
-        prompts,
-        intermediates,
-        "stage3_spoken_performance_plan",
+    context["spoken_base"] = await run_stage(
+        "stage3_spoken_base",
+        context, config, client, prompts, intermediates,
+        "stage3_spoken_base",
+    )
+    context["disfluency_plan"] = await run_stage(
+        "stage4_disfluency_plan",
+        context, config, client, prompts, intermediates,
+        "stage4_disfluency_plan",
     )
     context["dialogue"] = await run_stage(
-        "stage4_surface_generation",
-        context,
-        config,
-        client,
-        prompts,
-        intermediates,
-        "stage4_initial",
+        "stage5_surface_generation",
+        context, config, client, prompts, intermediates,
+        "stage5_initial",
     )
 
     validation: Dict[str, Any] = {"verdict": "repair", "repair_targets": []}
     for attempt in range(MAX_REPAIR_ATTEMPTS + 1):
         validation = await run_stage(
-            "stage5_clinical_naturalness_judge",
-            context,
-            config,
-            client,
-            prompts,
-            intermediates,
-            f"stage5_attempt_{attempt + 1}",
+            "stage6_validator",
+            context, config, client, prompts, intermediates,
+            f"stage6_attempt_{attempt + 1}",
         )
         if validation.get("verdict") == "pass":
             break
-        context["repair_targets"] = validation.get("repair_targets") or []
-        if not context["repair_targets"] or attempt == MAX_REPAIR_ATTEMPTS:
+        if validation.get("verdict") == "fail":
             break
+        raw_targets = validation.get("repair_targets") or []
+        context["repair_targets"] = [
+            {**target, "scope": target.get("scope", "surface")}
+            for target in raw_targets
+            if isinstance(target, dict)
+        ]
+        if not context["repair_targets"]:
+            logger.error(
+                "[{}] validator returned repair without usable repair targets",
+                context["dialogue_id"],
+            )
+            validation = {
+                **validation,
+                "verdict": "fail",
+                "failure_class": "unrepairable",
+                "failed_rules": validation.get("failed_rules") or [
+                    "validator_repair_targets"
+                ],
+            }
+            break
+        if attempt == MAX_REPAIR_ATTEMPTS:
+            break
+        structural_scopes = {
+            target.get("scope")
+            for target in context["repair_targets"]
+            if target.get("scope") in STRUCTURAL_REPAIR_STAGES
+        }
+        if structural_scopes:
+            for scope in ("contract", "plan", "spoken_base"):
+                if scope not in structural_scopes:
+                    continue
+                repair_stage = STRUCTURAL_REPAIR_STAGES[scope]
+                repaired = await run_stage(
+                    repair_stage,
+                    context,
+                    config,
+                    client,
+                    prompts,
+                    intermediates,
+                    f"{repair_stage}_{attempt + 1}",
+                )
+                context[{
+                    "contract": "clinical_contract",
+                    "plan": "encounter_plan",
+                    "spoken_base": "spoken_base",
+                }[scope]] = repaired
+
+            earliest_scope = min(
+                ("contract", "plan", "spoken_base"),
+                key=lambda scope: ("contract", "plan", "spoken_base").index(scope)
+                if scope in structural_scopes else 99,
+            )
+            if earliest_scope in {"contract", "plan"} and "plan" not in structural_scopes:
+                context["encounter_plan"] = await run_stage(
+                    "stage2_encounter_plan", context, config, client, prompts,
+                    intermediates, f"stage2_regenerated_{attempt + 1}",
+                )
+            if earliest_scope in {"contract", "plan", "spoken_base"} and "spoken_base" not in structural_scopes:
+                context["spoken_base"] = await run_stage(
+                    "stage3_spoken_base", context, config, client, prompts,
+                    intermediates, f"stage3_regenerated_{attempt + 1}",
+                )
+            context["disfluency_plan"] = await run_stage(
+                "stage4_disfluency_plan", context, config, client, prompts,
+                intermediates, f"stage4_regenerated_{attempt + 1}",
+            )
+            context["repair_targets"] = []
+            context["dialogue"] = await run_stage(
+                "stage5_surface_generation", context, config, client, prompts,
+                intermediates, f"stage5_regenerated_{attempt + 1}",
+            )
+            continue
         context["dialogue"] = await run_stage(
-            "stage4_surface_generation",
-            context,
-            config,
-            client,
-            prompts,
-            intermediates,
-            f"stage4_repair_{attempt + 1}",
+            "stage5_surface_generation",
+            context, config, client, prompts, intermediates,
+            f"stage5_repair_{attempt + 1}",
         )
 
     generated = context["dialogue"]
     generated_meta = generated.get("meta") if isinstance(generated.get("meta"), dict) else {}
     final_meta = dict(generated_meta)
-    # Existing or inferred source metadata is authoritative.
     final_meta.update(context["record"].get("meta", {}))
     result = {
         "dialogue_id": generated.get("dialogue_id", dialogue_id),
@@ -402,10 +557,7 @@ async def async_main(
             async with semaphore:
                 try:
                     result = await async_run_pipeline(item, config, prompt_path)
-                    row = {
-                        key: result[key]
-                        for key in ("dialogue_id", "source", "meta", "dialogue")
-                    }
+                    row = {key: result[key] for key in ("dialogue_id", "source", "meta", "dialogue")}
                     async with write_lock:
                         target = bad if result.get("validation_failed") else good
                         target.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -435,7 +587,9 @@ def parse_selected_ids(value: str) -> Set[int]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="B-mode medical dialogue conversion pipeline")
+    parser = argparse.ArgumentParser(
+        description="convert_v2 planner–generator medical dialogue conversion pipeline"
+    )
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--provider", choices=["deepseek", "qwen", "gemini"], default=None)
@@ -443,7 +597,7 @@ def main() -> None:
     parser.add_argument("--base-url", default=None)
     parser.add_argument("--api-key", default=None)
     parser.add_argument("--no-thinking", action="store_true")
-    parser.add_argument("--max-tokens", type=int, default=32768)
+    parser.add_argument("--max-tokens", type=int, default=65536)
     parser.add_argument("--max-retry", type=int, default=3)
     parser.add_argument("--concurrency", type=int, default=8)
     parser.add_argument("--sel-ids", type=parse_selected_ids, default=None)
@@ -454,7 +608,7 @@ def main() -> None:
     parser.add_argument("--stage-effort", nargs="*", default=None)
     parser.add_argument("--stage-temperature", nargs="*", default=None)
     parser.add_argument("--supplement", action="store_true")
-    parser.add_argument("--prompt", default=None, help="Path to v4_complete.md")
+    parser.add_argument("--prompt", default=None, help="Path to v5_complete.md")
     args = parser.parse_args()
 
     source = Path(args.input)

@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Configuration for the B-mode outpatient-dialogue pipeline.
+"""Configuration for the convert_v3 outpatient-dialogue pipeline.
 
-The pipeline supports OpenAI-compatible endpoints (DeepSeek and Qwen) and the
-native ``google-genai`` Gemini client.  It exposes the current pipeline's
-command-line parameters without retaining old prompt-stage compatibility.
+Supports OpenAI-compatible endpoints (DeepSeek and Qwen) and the native
+``google-genai`` Gemini client.
 """
 
 from __future__ import annotations
@@ -23,7 +22,13 @@ ENV_FILE = THIS_DIR / ".env"
 
 def load_dotenv() -> None:
     """Load the first available project .env without an extra dependency."""
-    candidates = (ENV_FILE, Path.cwd() / "convert" / ".env", Path.cwd() / ".env")
+    candidates = (
+        ENV_FILE,
+        THIS_DIR.parent / "convert" / ".env",
+        Path.cwd() / "convert_v3" / ".env",
+        Path.cwd() / "convert" / ".env",
+        Path.cwd() / ".env",
+    )
     for path in candidates:
         if not path.exists():
             continue
@@ -53,14 +58,11 @@ PROVIDER_REGISTRY: Dict[str, Dict[str, Any]] = {
     },
     "gemini": {
         "base_url": "",
-        "default_model": "gemini-3.7-flash",
+        "default_model": "gemini-3.8-flash",
     },
 }
 
 
-# Gemini 3 uses named thinking levels; Gemini 2.5 uses a token budget.  These
-# values follow Google's published OpenAI-effort mapping, while ``max`` keeps
-# the pipeline's strongest-setting meaning by mapping to Gemini ``high``.
 GEMINI_LEVEL_BY_EFFORT = {
     "low": "low",
     "medium": "medium",
@@ -80,14 +82,7 @@ def resolve_gemini_thinking(
     thinking_enabled: bool,
     thinking_effort: Optional[str],
 ) -> Dict[str, Any]:
-    """Build one valid Gemini ThinkingConfig payload for the selected model.
-
-    Gemini 3 accepts ``thinking_level`` and Gemini 2.5 accepts
-    ``thinking_budget``.  They must never be sent together.  A request to turn
-    thinking off is rejected when the selected Gemini model cannot actually do
-    so; silently downgrading to a different setting would make ``--no-thinking``
-    misleading.
-    """
+    """Build one valid Gemini ThinkingConfig payload for the selected model."""
     normalized_model = model.lower()
     effort = (thinking_effort or "medium").strip().lower()
     if effort not in GEMINI_LEVEL_BY_EFFORT:
@@ -128,9 +123,29 @@ def resolve_gemini_thinking(
     )
 
 
+PLANNER_STAGES = {
+    "stage1_clinical_brief",
+    "stage2_encounter_director",
+    "stage3_spoken_performance_plan",
+    "stage4_spoken_base",
+    "stage5_disfluency_plan",
+    "stage1_clinical_brief_repair",
+    "stage2_encounter_director_repair",
+    "stage3_spoken_performance_plan_repair",
+    "stage4_spoken_base_repair",
+}
+WRITER_STAGES = {"stage6_surface_generation"}
+JUDGE_STAGES = {"stage7_clinical_naturalness_judge"}
+JSON_STAGES = {
+    "stage0_meta_inference",
+    "stage6_surface_generation",
+    "stage7_clinical_naturalness_judge",
+}
+
+
 @dataclass(frozen=True)
 class StageRoleConfig:
-    """LLM settings for one semantic role in the B-mode pipeline."""
+    """LLM settings for one semantic role in convert_v3."""
 
     temperature: float
     thinking_effort: Optional[str]
@@ -140,18 +155,33 @@ class StageRoleConfig:
 
 STAGE_DEFAULTS: Dict[str, StageRoleConfig] = {
     "stage0_meta_inference": StageRoleConfig(0.1, "low", 4096, "Meta Inference"),
-    "stage1_clinical_brief": StageRoleConfig(0.15, "medium", 16384, "Clinical Brief"),
-    "stage2_encounter_director": StageRoleConfig(0.65, "high", 12288, "Encounter Director"),
+    "stage1_clinical_brief": StageRoleConfig(0.15, "medium", 65536, "Clinical Brief"),
+    "stage2_encounter_director": StageRoleConfig(0.65, "high", 65536, "Encounter Director"),
     "stage3_spoken_performance_plan": StageRoleConfig(
-        0.75, "high", 16384, "Spoken Performance Plan"
+        0.75, "high", 65536, "Spoken Performance Plan"
     ),
-    "stage4_surface_generation": StageRoleConfig(
-        0.85, "high", 20480, "Surface Generation"
+    "stage4_spoken_base": StageRoleConfig(0.1, "high", 65536, "Spoken Base"),
+    "stage5_disfluency_plan": StageRoleConfig(0.1, "medium", 65536, "Disfluency Plan"),
+    "stage6_surface_generation": StageRoleConfig(
+        0.3, "high", 65536, "Surface Generation"
     ),
-    "stage5_clinical_naturalness_judge": StageRoleConfig(
-        0.15, "medium", 12288, "Clinical/Naturalness Judge"
+    "stage7_clinical_naturalness_judge": StageRoleConfig(
+        0.15, "medium", 65536, "Clinical/Naturalness Judge"
+    ),
+    "stage1_clinical_brief_repair": StageRoleConfig(
+        0.1, "high", 65536, "Clinical Brief Repair"
+    ),
+    "stage2_encounter_director_repair": StageRoleConfig(
+        0.2, "high", 65536, "Encounter Director Repair"
+    ),
+    "stage3_spoken_performance_plan_repair": StageRoleConfig(
+        0.2, "high", 65536, "Spoken Performance Plan Repair"
+    ),
+    "stage4_spoken_base_repair": StageRoleConfig(
+        0.2, "high", 65536, "Spoken Base Repair"
     ),
 }
+
 
 @dataclass
 class StageOverride:
@@ -192,20 +222,18 @@ class PipelineConfig:
         )
 
     def get_model_for_stage(self, stage_name: str) -> str:
-        if stage_name in {
-            "stage1_clinical_brief",
-            "stage2_encounter_director",
-            "stage3_spoken_performance_plan",
-        }:
+        if stage_name in PLANNER_STAGES:
             return self.planner_model or self.model
-        if stage_name == "stage4_surface_generation":
+        if stage_name in WRITER_STAGES:
             return self.writer_model or self.model
-        if stage_name == "stage5_clinical_naturalness_judge":
+        if stage_name in JUDGE_STAGES:
             return self.judge_model or self.model
         return self.model
 
+    def output_kind(self, stage_name: str) -> str:
+        return "json" if stage_name in JSON_STAGES else "text"
+
     def get_gemini_thinking(self, stage_name: str) -> Dict[str, Any]:
-        """Return the exact native Gemini config for this stage's model/effort."""
         if self.provider != "gemini":
             raise ValueError("Gemini thinking settings requested for a non-Gemini provider")
         stage = self.get_stage_config(stage_name)
@@ -234,7 +262,7 @@ def _parse_stage_overrides(args: Any) -> Dict[str, StageOverride]:
     def get_override(stage_name: str) -> StageOverride:
         if stage_name not in STAGE_DEFAULTS:
             valid = ", ".join(sorted(STAGE_DEFAULTS))
-            raise ValueError(f"Unknown stage '{stage_name}'. Valid B-mode stages: {valid}")
+            raise ValueError(f"Unknown stage '{stage_name}'. Valid convert_v3 stages: {valid}")
         return overrides.setdefault(stage_name, StageOverride())
 
     for item in getattr(args, "stage_effort", None) or []:
@@ -267,7 +295,11 @@ def create_config_from_args(args: Any) -> PipelineConfig:
     if provider == "gemini":
         api_key = api_key or os.getenv("GOOGLE_API_KEY", "")
     if not api_key:
-        env_hint = "GOOGLE_API_KEY or FYP_CONVERT_API_KEY" if provider == "gemini" else "FYP_CONVERT_API_KEY"
+        env_hint = (
+            "GOOGLE_API_KEY or FYP_CONVERT_API_KEY"
+            if provider == "gemini"
+            else "FYP_CONVERT_API_KEY"
+        )
         raise RuntimeError(f"No API key found. Set {env_hint} or pass --api-key.")
 
     model = (
@@ -277,8 +309,6 @@ def create_config_from_args(args: Any) -> PipelineConfig:
     )
     thinking_enabled = not getattr(args, "no_thinking", False)
     if provider == "gemini" and not thinking_enabled:
-        # Fail at startup instead of accepting a flag that the chosen model
-        # cannot honor. The per-stage validation repeats this for model overrides.
         resolve_gemini_thinking(model, False, "medium")
 
     output = getattr(args, "output", None)

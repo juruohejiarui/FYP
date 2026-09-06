@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Provider-neutral JSON calls and small utilities for the B-mode pipeline."""
+"""Provider-neutral LLM calls for convert_v2.
+
+JSON stages are parsed into objects. Line-plan stages keep the raw model text
+and pass it downstream unchanged.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +12,7 @@ import asyncio
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from loguru import logger
 from tqdm import tqdm
@@ -60,6 +64,19 @@ def extract_json_object(text: str) -> Dict[str, Any]:
     raise ValueError("No JSON object found in model output")
 
 
+def normalize_stage_text(text: str) -> str:
+    """Strip fences around a line-plan block, otherwise keep the model text."""
+    text = text.strip()
+    if not text:
+        raise EmptyResponseError("Model returned an empty response")
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:text|markdown|md)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text).strip()
+        if not text:
+            raise EmptyResponseError("Model returned an empty fenced response")
+    return text
+
+
 async def _call_gemini(
     messages: List[Dict[str, str]],
     *,
@@ -69,8 +86,8 @@ async def _call_gemini(
     temperature: float,
     thinking_enabled: bool,
     thinking_effort: Optional[str],
+    output_kind: str,
 ) -> str:
-    """Call Gemini lazily so DeepSeek/Qwen users need not install google-genai."""
     try:
         from google.genai import types
     except ImportError as exc:
@@ -85,13 +102,15 @@ async def _call_gemini(
         thinking_enabled,
         thinking_effort,
     )
-    config = types.GenerateContentConfig(
-        system_instruction="\n\n".join(system_parts) or None,
-        temperature=temperature,
-        max_output_tokens=max_tokens,
-        response_mime_type="application/json",
-        thinking_config=types.ThinkingConfig(**thinking_settings),
-    )
+    config_kwargs: Dict[str, Any] = {
+        "system_instruction": "\n\n".join(system_parts) or None,
+        "temperature": temperature,
+        "max_output_tokens": max_tokens,
+        "thinking_config": types.ThinkingConfig(**thinking_settings),
+    }
+    if output_kind == "json":
+        config_kwargs["response_mime_type"] = "application/json"
+    config = types.GenerateContentConfig(**config_kwargs)
     response = await client.aio.models.generate_content(
         model=model,
         contents="\n\n".join(user_parts),
@@ -102,7 +121,7 @@ async def _call_gemini(
     except (AttributeError, ValueError):
         text = ""
     if not text.strip():
-        raise EmptyResponseError("Gemini returned no textual JSON response")
+        raise EmptyResponseError("Gemini returned no textual response")
     return text
 
 
@@ -116,8 +135,9 @@ async def async_call_llm(
     thinking_enabled: bool,
     thinking_effort: Optional[str],
     provider: str,
+    output_kind: str,
 ) -> str:
-    """Generate one JSON-shaped response through the configured provider."""
+    """Generate one response through the configured provider."""
     if provider == "gemini":
         return await _call_gemini(
             messages,
@@ -127,6 +147,7 @@ async def async_call_llm(
             temperature=temperature,
             thinking_enabled=thinking_enabled,
             thinking_effort=thinking_effort,
+            output_kind=output_kind,
         )
 
     request: Dict[str, Any] = {
@@ -136,7 +157,8 @@ async def async_call_llm(
         "temperature": temperature,
     }
     if provider == "deepseek":
-        request["response_format"] = {"type": "json_object"}
+        if output_kind == "json":
+            request["response_format"] = {"type": "json_object"}
         if thinking_enabled:
             request["extra_body"] = {"thinking": {"type": "enabled"}}
             if thinking_effort:
@@ -150,14 +172,13 @@ async def async_call_llm(
             raise TokenTruncationError(f"DeepSeek stopped at {max_tokens} tokens")
         reasoning = getattr(choice.message, "reasoning_content", None) or ""
         if thinking_enabled and reasoning.strip():
-            logger.warning("DeepSeek returned reasoning text instead of final JSON")
+            logger.warning("DeepSeek returned reasoning text instead of final content")
             return reasoning
         raise EmptyResponseError("DeepSeek returned empty content")
 
     if provider == "qwen":
         request["extra_body"] = {"enable_thinking": bool(thinking_enabled)}
         if thinking_enabled:
-            # DashScope's thinking-mode stream is more reliable for Qwen models.
             request["stream"] = True
             request["temperature"] = max(temperature, 1.0)
             if thinking_effort:
@@ -169,7 +190,8 @@ async def async_call_llm(
                     chunks.append(chunk.choices[0].delta.content)
             content = "".join(chunks)
         else:
-            request["response_format"] = {"type": "json_object"}
+            if output_kind == "json":
+                request["response_format"] = {"type": "json_object"}
             response = await client.chat.completions.create(**request)
             content = response.choices[0].message.content or ""
         if not content.strip():
@@ -179,7 +201,7 @@ async def async_call_llm(
     raise ValueError(f"Unsupported provider: {provider}")
 
 
-async def async_call_llm_structured(
+async def async_call_llm_raw(
     messages: List[Dict[str, str]],
     *,
     client: Any,
@@ -191,14 +213,15 @@ async def async_call_llm_structured(
     provider: str,
     max_retries: int,
     stage_label: str,
-) -> Dict[str, Any]:
-    """Call a model with retries and return one parsed top-level JSON object."""
+    output_kind: str,
+) -> str:
+    """Call a model with retries and return the raw generated text."""
     last_error: Optional[Exception] = None
     use_thinking = thinking_enabled
     token_limit = max_tokens
     for attempt in range(1, max_retries + 1):
         try:
-            raw = await async_call_llm(
+            return await async_call_llm(
                 messages,
                 client=client,
                 model=model,
@@ -207,8 +230,8 @@ async def async_call_llm_structured(
                 thinking_enabled=use_thinking,
                 thinking_effort=thinking_effort if use_thinking else None,
                 provider=provider,
+                output_kind=output_kind,
             )
-            return extract_json_object(raw)
         except TokenTruncationError as exc:
             last_error = exc
             token_limit *= 2
@@ -224,7 +247,7 @@ async def async_call_llm_structured(
                 )
             else:
                 logger.warning(f"[{stage_label}] attempt {attempt}/{max_retries}: {exc}")
-        except Exception as exc:  # Provider errors and malformed JSON are retryable.
+        except Exception as exc:
             last_error = exc
             logger.warning(f"[{stage_label}] attempt {attempt}/{max_retries}: {exc}")
         if attempt < max_retries:
@@ -239,23 +262,24 @@ async def async_stage_llm_call(
     system_prompt: str,
     config: Any,
     client: Any,
-) -> Dict[str, Any]:
-    """Execute a named stage with its model and role-specific settings."""
+) -> Union[str, Dict[str, Any]]:
+    """Execute a named stage. JSON stages return a dict; line-plan stages return text."""
     stage_config = config.get_stage_config(stage_name)
     model = config.get_model_for_stage(stage_name)
+    output_kind = config.output_kind(stage_name)
     thinking_suffix = ""
     if config.provider == "gemini":
         settings = config.get_gemini_thinking(stage_name)
         thinking_suffix = f" gemini_thinking={settings}"
     tqdm.write(
         f"[{stage_config.label}] model={model} effort={stage_config.thinking_effort} "
-        f"temp={stage_config.temperature}{thinking_suffix}"
+        f"temp={stage_config.temperature} kind={output_kind}{thinking_suffix}"
     )
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content},
     ]
-    return await async_call_llm_structured(
+    raw = await async_call_llm_raw(
         messages,
         client=client,
         model=model,
@@ -266,7 +290,11 @@ async def async_stage_llm_call(
         provider=config.provider,
         max_retries=config.max_retries,
         stage_label=stage_config.label,
+        output_kind=output_kind,
     )
+    if output_kind == "json":
+        return extract_json_object(raw)
+    return normalize_stage_text(raw)
 
 
 def save_intermediates(
@@ -280,7 +308,10 @@ def save_intermediates(
     destination = intermediates_dir / str(dialogue_id)
     destination.mkdir(parents=True, exist_ok=True)
     for name, value in intermediates.items():
-        (destination / f"{name}.json").write_text(
-            json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        if isinstance(value, str):
+            (destination / f"{name}.txt").write_text(value, encoding="utf-8")
+        else:
+            (destination / f"{name}.json").write_text(
+                json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
     tqdm.write(f"Intermediates saved to {destination}")
