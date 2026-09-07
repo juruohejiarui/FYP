@@ -1,6 +1,6 @@
 /*_tests
-scripts-*.jsonl
 /data/ref/*.wav
 /data/ref/*.json
-/data/convert
+/data/convert/*_invalid.jsonl
+/data/convert/intermediates
 .env
