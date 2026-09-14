@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -17,7 +18,137 @@ from typing import Any, Dict, List, Optional, Union
 from loguru import logger
 from tqdm import tqdm
 
-from .config import resolve_gemini_thinking
+from .config import (
+    KNOWN_STAGES,
+    LLM_FIELDS,
+    PROVIDER_REGISTRY,
+    STAGE_LABELS,
+    LlmCallConfig,
+    PipelineConfig,
+    resolve_gemini_thinking,
+    thinking_from_effort,
+)
+
+
+_ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def expand_env_value(value: Any) -> Any:
+    """Replace $VAR and ${VAR} in strings. Other JSON types pass through."""
+    if not isinstance(value, str):
+        return value
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1) or match.group(2)
+        if name not in os.environ:
+            raise RuntimeError(f"Environment variable '{name}' is not set")
+        return os.environ[name]
+
+    return _ENV_PATTERN.sub(replace, value)
+
+
+def _require_llm_fields(payload: Dict[str, Any], where: str) -> None:
+    missing = [field for field in ("provider", "api_key", "llm", "max_token", "temperature") if field not in payload]
+    if missing:
+        raise ValueError(f"{where} missing required fields: {', '.join(missing)}")
+
+
+def _build_llm_call_config(payload: Dict[str, Any], stage_name: str) -> LlmCallConfig:
+    provider = str(payload["provider"]).strip()
+    if provider not in PROVIDER_REGISTRY:
+        valid = ", ".join(sorted(PROVIDER_REGISTRY))
+        raise ValueError(f"Unknown provider '{provider}' for {stage_name}. Use one of: {valid}")
+    provider_info = PROVIDER_REGISTRY[provider]
+    api_key = str(expand_env_value(payload["api_key"]) or "")
+    if not api_key:
+        raise RuntimeError(f"No API key for {stage_name}. Set api_key or an env placeholder.")
+    llm = str(payload.get("llm") or provider_info["default_model"])
+    max_token = int(payload["max_token"])
+    if "temperature" not in payload:
+        raise ValueError(f"{stage_name} missing required field: temperature")
+    temperature = float(payload["temperature"])
+    raw_base = payload.get("base_url")
+    base_url = str(expand_env_value(raw_base) or "") if raw_base not in (None, "") else provider_info["base_url"]
+    thinking_enabled, reason_effort = thinking_from_effort(payload.get("reason_effort"))
+    if provider == "gemini":
+        resolve_gemini_thinking(llm, thinking_enabled, reason_effort)
+    return LlmCallConfig(
+        provider=provider,
+        api_key=api_key,
+        llm=llm,
+        max_token=max_token,
+        reason_effort=reason_effort,
+        temperature=temperature,
+        base_url=base_url,
+        thinking_enabled=thinking_enabled,
+        label=STAGE_LABELS.get(stage_name, stage_name),
+    )
+
+
+def load_pipeline_config(path: Union[str, Path]) -> PipelineConfig:
+    """Read default + per-stage LLM JSON. Stage keys overlay the default block."""
+    config_path = Path(path)
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("Pipeline config must be a JSON object")
+    default = raw.get("default")
+    if not isinstance(default, dict):
+        raise ValueError("Pipeline config must include a 'default' object")
+    _require_llm_fields(default, "default")
+
+    stage_overlays = raw.get("stages", {})
+    if stage_overlays is None:
+        stage_overlays = {}
+    if not isinstance(stage_overlays, dict):
+        raise ValueError("'stages' must be an object mapping stage name to settings")
+    unknown = sorted(set(stage_overlays) - set(KNOWN_STAGES))
+    if unknown:
+        raise ValueError("Unknown stages in config: " + ", ".join(unknown))
+
+    extra_default = sorted(set(default) - set(LLM_FIELDS))
+    if extra_default:
+        raise ValueError("default has unknown fields: " + ", ".join(extra_default))
+
+    stages: Dict[str, LlmCallConfig] = {}
+    for stage_name in KNOWN_STAGES:
+        if stage_name == "stage6_surface_repair" and stage_name not in stage_overlays:
+            continue
+        overlay = stage_overlays.get(stage_name) or {}
+        if overlay and not isinstance(overlay, dict):
+            raise ValueError(f"Stage '{stage_name}' must be an object")
+        extra = sorted(set(overlay) - set(LLM_FIELDS))
+        if extra:
+            raise ValueError(f"Stage '{stage_name}' has unknown fields: {', '.join(extra)}")
+        merged = dict(default)
+        merged.update(overlay)
+        stages[stage_name] = _build_llm_call_config(merged, stage_name)
+    if "stage6_surface_repair" not in stages:
+        generation = stages["stage6_surface_generation"]
+        stages["stage6_surface_repair"] = LlmCallConfig(
+            provider=generation.provider,
+            api_key=generation.api_key,
+            llm=generation.llm,
+            max_token=generation.max_token,
+            reason_effort=generation.reason_effort,
+            temperature=generation.temperature,
+            base_url=generation.base_url,
+            thinking_enabled=generation.thinking_enabled,
+            label=STAGE_LABELS["stage6_surface_repair"],
+        )
+
+    intermediates_dir = None
+    save_intermediates = bool(raw.get("save_intermediates", False))
+    if raw.get("intermediates_dir"):
+        intermediates_dir = Path(str(raw["intermediates_dir"]))
+    return PipelineConfig(
+        stages=stages,
+        max_retries=int(raw.get("max_retry", 3)),
+        concurrency=int(raw.get("concurrency", 8)),
+        save_intermediates=save_intermediates,
+        intermediates_dir=intermediates_dir,
+    )
 
 
 class EmptyResponseError(RuntimeError):
@@ -260,19 +391,18 @@ async def async_stage_llm_call(
     user_content: str,
     *,
     system_prompt: str,
-    config: Any,
-    client: Any,
+    config: PipelineConfig,
 ) -> Union[str, Dict[str, Any]]:
     """Execute a named stage. JSON stages return a dict; line-plan stages return text."""
     stage_config = config.get_stage_config(stage_name)
-    model = config.get_model_for_stage(stage_name)
     output_kind = config.output_kind(stage_name)
     thinking_suffix = ""
-    if config.provider == "gemini":
+    if stage_config.provider == "gemini":
         settings = config.get_gemini_thinking(stage_name)
         thinking_suffix = f" gemini_thinking={settings}"
     tqdm.write(
-        f"[{stage_config.label}] model={model} effort={stage_config.thinking_effort} "
+        f"[{stage_config.label}] provider={stage_config.provider} "
+        f"model={stage_config.llm} effort={stage_config.reason_effort} "
         f"temp={stage_config.temperature} kind={output_kind}{thinking_suffix}"
     )
     messages = [
@@ -281,13 +411,13 @@ async def async_stage_llm_call(
     ]
     raw = await async_call_llm_raw(
         messages,
-        client=client,
-        model=model,
-        max_tokens=stage_config.max_tokens,
+        client=config.get_client(stage_name),
+        model=stage_config.llm,
+        max_tokens=stage_config.max_token,
         temperature=stage_config.temperature,
-        thinking_enabled=config.thinking_enabled,
-        thinking_effort=stage_config.thinking_effort,
-        provider=config.provider,
+        thinking_enabled=stage_config.thinking_enabled,
+        thinking_effort=stage_config.reason_effort,
+        provider=stage_config.provider,
         max_retries=config.max_retries,
         stage_label=stage_config.label,
         output_kind=output_kind,
@@ -302,7 +432,7 @@ def save_intermediates(
     intermediates: Dict[str, Any],
     intermediates_dir: Optional[Path],
 ) -> None:
-    """Save traceable stage outputs when --save-intermediates is enabled."""
+    """Save traceable stage outputs when save_intermediates is enabled."""
     if not intermediates_dir:
         return
     destination = intermediates_dir / str(dialogue_id)

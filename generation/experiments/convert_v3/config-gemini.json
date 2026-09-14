@@ -1,0 +1,48 @@
+{
+  "max_retry": 3,
+  "concurrency": 128,
+  "save_intermediates": false,
+  "default": {
+    "provider": "gemini",
+    "api_key": "$FYP_GEMINI_API_KEY",
+    "llm": "gemini-3.8-flash",
+    "max_token": 65536,
+    "reason_effort": "medium",
+    "temperature": 0.2
+  },
+  "stages": {
+    "stage0_meta_inference": {
+      "reason_effort": "low",
+      "max_token": 4096,
+      "temperature": 0.1
+    },
+    "stage1_clinical_brief": {
+      "reason_effort": "medium",
+      "temperature": 0.15
+    },
+    "stage2_encounter_director": {
+      "reason_effort": "high",
+      "temperature": 0.65
+    },
+    "stage3_spoken_performance_plan": {
+      "reason_effort": "high",
+      "temperature": 0.75
+    },
+    "stage4_spoken_base": {
+      "reason_effort": "high",
+      "temperature": 0.1
+    },
+    "stage5_disfluency_plan": {
+      "reason_effort": "medium",
+      "temperature": 0.1
+    },
+    "stage6_surface_generation": {
+      "reason_effort": "high",
+      "temperature": 0.3
+    },
+    "stage7_clinical_naturalness_judge": {
+      "reason_effort": "medium",
+      "temperature": 0.15
+    }
+  }
+}

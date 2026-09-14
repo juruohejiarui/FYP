@@ -20,8 +20,8 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 from loguru import logger
 from tqdm import tqdm
 
-from .config import PipelineConfig, create_config_from_args
-from .utils import async_stage_llm_call, save_intermediates
+from .config import PipelineConfig
+from .utils import async_stage_llm_call, load_pipeline_config, save_intermediates
 
 
 MAX_REPAIR_ATTEMPTS = 2
@@ -356,22 +356,21 @@ async def run_stage(
     stage: str,
     context: Dict[str, Any],
     config: PipelineConfig,
-    client: Any,
     prompts: Dict[str, str],
     intermediates: Dict[str, Any],
     saved_name: str,
 ) -> Any:
     is_repair = stage == "stage6_surface_generation" and context.get("repair_targets")
     prompt_key = REPAIR_STAGE if is_repair else stage
+    llm_stage = REPAIR_STAGE if is_repair else stage
     prompt_body = _with_preamble(prompts, prompts[prompt_key])
     user_content = stage_user_content(stage, context, prompt_body)
     tqdm.write(f"[{context['dialogue_id']}] {stage}")
     result = await async_stage_llm_call(
-        stage,
+        llm_stage,
         user_content,
         system_prompt=SYSTEM[stage if not is_repair else "stage6_surface_generation"],
         config=config,
-        client=client,
     )
     intermediates[saved_name] = result
     return result
@@ -393,44 +392,43 @@ async def async_run_pipeline(
         "repair_targets": [],
     }
     intermediates: Dict[str, Any] = {}
-    client = config.create_async_client()
 
     if any(missing_flags):
         inferred = await run_stage(
             "stage0_meta_inference",
-            context, config, client, prompts, intermediates,
+            context, config, prompts, intermediates,
             "stage0_meta_inference",
         )
         context["record"]["meta"] = merge_meta(meta_base, inferred, missing_flags)
 
     context["clinical_brief"] = await run_stage(
         "stage1_clinical_brief",
-        context, config, client, prompts, intermediates,
+        context, config, prompts, intermediates,
         "stage1_clinical_brief",
     )
     context["encounter_director"] = await run_stage(
         "stage2_encounter_director",
-        context, config, client, prompts, intermediates,
+        context, config, prompts, intermediates,
         "stage2_encounter_director",
     )
     context["spoken_performance_plan"] = await run_stage(
         "stage3_spoken_performance_plan",
-        context, config, client, prompts, intermediates,
+        context, config, prompts, intermediates,
         "stage3_spoken_performance_plan",
     )
     context["spoken_base"] = await run_stage(
         "stage4_spoken_base",
-        context, config, client, prompts, intermediates,
+        context, config, prompts, intermediates,
         "stage4_spoken_base",
     )
     context["disfluency_plan"] = await run_stage(
         "stage5_disfluency_plan",
-        context, config, client, prompts, intermediates,
+        context, config, prompts, intermediates,
         "stage5_disfluency_plan",
     )
     context["dialogue"] = await run_stage(
         "stage6_surface_generation",
-        context, config, client, prompts, intermediates,
+        context, config, prompts, intermediates,
         "stage6_initial",
     )
 
@@ -438,7 +436,7 @@ async def async_run_pipeline(
     for attempt in range(MAX_REPAIR_ATTEMPTS + 1):
         validation = await run_stage(
             "stage7_clinical_naturalness_judge",
-            context, config, client, prompts, intermediates,
+            context, config, prompts, intermediates,
             f"stage7_attempt_{attempt + 1}",
         )
         if validation.get("verdict") == "pass":
@@ -479,7 +477,7 @@ async def async_run_pipeline(
                 repair_stage = STRUCTURAL_REPAIR_STAGES[scope]
                 repaired = await run_stage(
                     repair_stage,
-                    context, config, client, prompts, intermediates,
+                    context, config, prompts, intermediates,
                     f"{repair_stage}_{attempt + 1}",
                 )
                 context[SCOPE_CONTEXT_KEY[scope]] = repaired
@@ -491,12 +489,12 @@ async def async_run_pipeline(
             )
             if earliest_scope == "brief" and "director" not in structural_scopes:
                 context["encounter_director"] = await run_stage(
-                    "stage2_encounter_director", context, config, client, prompts,
+                    "stage2_encounter_director", context, config, prompts,
                     intermediates, f"stage2_regenerated_{attempt + 1}",
                 )
             if earliest_scope in {"brief", "director"} and "plan" not in structural_scopes:
                 context["spoken_performance_plan"] = await run_stage(
-                    "stage3_spoken_performance_plan", context, config, client, prompts,
+                    "stage3_spoken_performance_plan", context, config, prompts,
                     intermediates, f"stage3_regenerated_{attempt + 1}",
                 )
             if (
@@ -504,22 +502,22 @@ async def async_run_pipeline(
                 and "spoken_base" not in structural_scopes
             ):
                 context["spoken_base"] = await run_stage(
-                    "stage4_spoken_base", context, config, client, prompts,
+                    "stage4_spoken_base", context, config, prompts,
                     intermediates, f"stage4_regenerated_{attempt + 1}",
                 )
             context["disfluency_plan"] = await run_stage(
-                "stage5_disfluency_plan", context, config, client, prompts,
+                "stage5_disfluency_plan", context, config, prompts,
                 intermediates, f"stage5_regenerated_{attempt + 1}",
             )
             context["repair_targets"] = []
             context["dialogue"] = await run_stage(
-                "stage6_surface_generation", context, config, client, prompts,
+                "stage6_surface_generation", context, config, prompts,
                 intermediates, f"stage6_regenerated_{attempt + 1}",
             )
             continue
         context["dialogue"] = await run_stage(
             "stage6_surface_generation",
-            context, config, client, prompts, intermediates,
+            context, config, prompts, intermediates,
             f"stage6_repair_{attempt + 1}",
         )
 
@@ -588,13 +586,12 @@ async def async_main(
     entries: List[Dict[str, Any]],
     config: PipelineConfig,
     output: Path,
-    concurrency: int,
     supplement: bool,
     prompt_path: Path,
 ) -> None:
     invalid_path = output.with_name(output.stem + "_invalid.jsonl")
     mode = "a" if supplement else "w"
-    semaphore = asyncio.Semaphore(max(1, concurrency))
+    semaphore = asyncio.Semaphore(max(1, config.concurrency))
     write_lock = asyncio.Lock()
     kept = 0
     failed = 0
@@ -641,25 +638,12 @@ def parse_selected_ids(value: str) -> Set[int]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="convert_v3 medical dialogue conversion pipeline")
+    parser.add_argument("--config", required=True, help="Path to per-stage LLM JSON config")
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--provider", choices=["deepseek", "qwen", "gemini"], default=None)
-    parser.add_argument("--model", default=None)
-    parser.add_argument("--base-url", default=None)
-    parser.add_argument("--api-key", default=None)
-    parser.add_argument("--no-thinking", action="store_true")
-    parser.add_argument("--max-tokens", type=int, default=32768)
-    parser.add_argument("--max-retry", type=int, default=3)
-    parser.add_argument("--concurrency", type=int, default=8)
     parser.add_argument("--sel-ids", type=parse_selected_ids, default=None)
-    parser.add_argument("--save-intermediates", action="store_true")
-    parser.add_argument("--planner-model", default=None)
-    parser.add_argument("--writer-model", default=None)
-    parser.add_argument("--judge-model", default=None)
-    parser.add_argument("--stage-effort", nargs="*", default=None)
-    parser.add_argument("--stage-temperature", nargs="*", default=None)
     parser.add_argument("--supplement", action="store_true")
-    parser.add_argument("--prompt", default=None, help="Path to v6_complete.md")
+    parser.add_argument("--prompt", default=None, help="prompts/v6_complete.md")
     args = parser.parse_args()
 
     source = Path(args.input)
@@ -671,6 +655,14 @@ def main() -> None:
     if not prompt_path.exists():
         logger.error(f"Prompt book not found: {prompt_path}")
         sys.exit(1)
+
+    try:
+        config = load_pipeline_config(args.config)
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.error(f"Failed to load config: {exc}")
+        sys.exit(1)
+    if config.save_intermediates and config.intermediates_dir is None:
+        config.intermediates_dir = output.parent / "intermediates"
 
     output.parent.mkdir(parents=True, exist_ok=True)
     entries = read_jsonl(source)
@@ -690,10 +682,7 @@ def main() -> None:
         logger.warning("No records to process")
         return
 
-    config = create_config_from_args(args)
-    asyncio.run(
-        async_main(entries, config, output, args.concurrency, args.supplement, prompt_path)
-    )
+    asyncio.run(async_main(entries, config, output, args.supplement, prompt_path))
 
 
 if __name__ == "__main__":
