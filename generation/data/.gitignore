@@ -1,0 +1,4 @@
+/ref/*.wav
+/ref/*.json
+/convert/*_invalid.jsonl
+/convert/intermediates

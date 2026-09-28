@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""convert_v3 clinical-constraint-to-transcript conversion pipeline.
+"""convert_stage1 clinical-constraint-to-transcript conversion pipeline.
 
 Compact source turns are visible from meta inference through Spoken Base.
 Later stages receive previous line-plan blocks. Structural repair can jump
@@ -381,7 +381,7 @@ async def async_run_pipeline(
     config: PipelineConfig,
     prompt_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Convert one source record through convert_v3 stages."""
+    """Convert one source record through convert_stage1 stages."""
     prompts = load_prompt_book(prompt_path or resolve_prompt_path(None))
     prepared, meta_base, missing_flags = prepare_record(record)
     dialogue_id = prepared.get("dialogue_id") or prepared.get("id") or "unknown"
@@ -637,7 +637,7 @@ def parse_selected_ids(value: str) -> Set[int]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="convert_v3 medical dialogue conversion pipeline")
+    parser = argparse.ArgumentParser(description="convert_stage1 medical dialogue conversion pipeline")
     parser.add_argument("--config", required=True, help="Path to per-stage LLM JSON config")
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)

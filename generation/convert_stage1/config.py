@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Per-stage LLM settings for convert_v3.
+"""Per-stage LLM settings for convert_stage1.
 
 JSON files supply a default block plus optional per-stage overlays.
 Clients are cached by provider, API key, and base URL.
@@ -73,8 +73,7 @@ def load_dotenv() -> None:
     """Load the first available project .env without an extra dependency."""
     candidates = (
         ENV_FILE,
-        THIS_DIR.parent / "convert" / ".env",
-        Path.cwd() / "convert_v3" / ".env",
+        THIS_DIR.parent / "experiments" / "convert" / ".env",
         Path.cwd() / "convert" / ".env",
         Path.cwd() / ".env",
     )
@@ -221,7 +220,7 @@ class PipelineConfig:
         if stage_name == "stage6_surface_repair":
             return self.stages["stage6_surface_generation"]
         valid = ", ".join(KNOWN_STAGES)
-        raise ValueError(f"Unknown stage '{stage_name}'. Valid convert_v3 stages: {valid}")
+        raise ValueError(f"Unknown stage '{stage_name}'. Valid convert_stage1 stages: {valid}")
 
     def output_kind(self, stage_name: str) -> str:
         return "json" if stage_name in JSON_STAGES else "text"

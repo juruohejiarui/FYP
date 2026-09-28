@@ -207,7 +207,7 @@
   ],
   "coverage":[{"fact_id":"F1","planned_turns":[0]}],
   "optional_social_turns":[{"position":"before_turn_0","purpose":"线下问候","adds_medical_fact":false}],
-  "dialogue_rhythm":"brief_QA | patient_narrative_then_QA | explanation_led",
+"dialogue_rhythm":"brief_QA | patient_narrative_then_QA | explanation_led",
   "long_turn_splits":[
     {"source_fact_ids":["F2","F3","F4"],"split_after":"F2","bridge_speaker":"医生","bridge_type":"acknowledgement | echo | contextual_follow_up","bridge_goal":"只引出 F3/F4"}
   ],

@@ -10,7 +10,7 @@ from utils.wav_chk import get_wav_duration_seconds, is_wav_too_long, remove_wav_
 from ref.utils import RefEntry, get_entries, select_patient_doctor_refs
 from soulxpodcast.config import SamplingParams
 
-OUTPUT_DIR = Path(__file__).parent / "data" / "audio" / "soulx"
+OUTPUT_DIR = Path(__file__).resolve().parents[1] / "data" / "audio" / "soulx"
 PROJECT_ROOT = Path(__file__).parents[2]
 DEFAULT_MODEL_PATH = PROJECT_ROOT / "models" / "pretrained" / "TTS" / "SoulX-Podcast-1.7B-dialect"
 

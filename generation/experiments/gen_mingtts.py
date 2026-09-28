@@ -13,7 +13,7 @@ from ref.utils import RefEntry, get_entries, select_patient_doctor_refs
 
 random.seed(42)
 
-OUTPUT_DIR = Path(__file__).parent / "data" / "audio" / "mingtts"
+OUTPUT_DIR = Path(__file__).resolve().parents[1] / "data" / "audio" / "mingtts"
 PROJECT_ROOT = Path(__file__).parents[2]
 DEFAULT_MODEL_PATH = PROJECT_ROOT / "models" / "pretrained" / "TTS" / "Ming-omni-tts-0.5B"
 
@@ -60,7 +60,6 @@ def generate(model : MingAudio,
             mx_chars_per_chunks : int = -1) -> dict[str]:
     script_id = script['dialogue_id']
     output_path = OUTPUT_DIR / f"{script_id}.wav"
-    
     chunks = build_dialogue_chunks(script['dialogue'], mx_chars_per_chunks)
     
     ref_wavs = [ref.wav for ref in refs]
@@ -175,4 +174,3 @@ if __name__ == "__main__" :
     with open(manifest_path, 'w', encoding='utf-8') as f :
         for entry in manifests.values() :
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    

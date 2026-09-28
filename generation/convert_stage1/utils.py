@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Provider-neutral LLM calls for convert_v3.
+"""Provider-neutral LLM calls for convert_stage1.
 
 JSON stages are parsed into objects. Line-plan stages keep the raw model text
 and pass it downstream unchanged.

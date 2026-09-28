@@ -4,7 +4,7 @@ import json
 import os
 import random
 
-REF_DIR = Path(__file__).parents[1] / "data" / "ref"
+REF_DIR = Path(__file__).resolve().parents[2] / "data" / "ref"
 
 # Speech-friendly peak targets:
 # - If the clip peak is below -12 dBFS, boost it.

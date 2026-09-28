@@ -19,9 +19,9 @@ from utils.moss import (
 from utils.script import parse
 from utils.wav_chk import get_wav_duration_seconds, is_wav_too_long, remove_wav_if_exists
 
-OUTPUT_DIR = Path(__file__).parent / "data" / "audio" / "moss"
+OUTPUT_DIR = Path(__file__).resolve().parents[1] / "data" / "audio" / "moss"
 PROJECT_ROOT = Path(__file__).parents[2]
-MODEL_CODE_PATH = PROJECT_ROOT / "generation" / "models" / "moss-ttsd"
+MODEL_CODE_PATH = PROJECT_ROOT / "generation" / "tts"
 DEFAULT_MODEL_PATH = PROJECT_ROOT / "models" / "pretrained" / "TTS" / "MOSS-TTSD-v1.0"
 DEFAULT_CODEC_PATH = PROJECT_ROOT / "models" / "pretrained" / "TTS" / "MOSS-Audio-Tokenizer"
 

@@ -4,6 +4,6 @@
 	"python.analysis.extraPaths": [
 		"./generation/models/ming-omni-tts",
 		"./generation/models/soulx-podcast",
-		"./generation/models/moss-ttsd"
+		"./generation/tts"
 	]
 }

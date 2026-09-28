@@ -1,6 +1,2 @@
 /*_tests
-/data/ref/*.wav
-/data/ref/*.json
-/data/convert/*_invalid.jsonl
-/data/convert/intermediates
 .env

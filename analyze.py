@@ -2,9 +2,9 @@ import json
 import os
 from collections import Counter
 
-input_file = "./data/clean/scripts-A.jsonl"
-output_file = "./data/convert/scripts-A-v1.jsonl"
-invalid_file = "./data/convert/scripts-A-v1_invalid.jsonl"
+input_file = "./generation/data/clean/scripts-A.jsonl"
+output_file = "./generation/data/convert/scripts-A-v1.jsonl"
+invalid_file = "./generation/data/convert/scripts-A-v1_invalid.jsonl"
 
 def analyze_file(filepath):
     if not os.path.exists(filepath):
@@ -98,4 +98,3 @@ if len(out_inv_duplicates) > 0:
     for k, v in out_inv_counts.most_common(10):
         if v > 1:
             print(f"  {k}: {v}")
-

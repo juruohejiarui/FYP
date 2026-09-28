@@ -9,7 +9,7 @@ from transformers import AutoModel, AutoProcessor
 THIS_FILE = Path(__file__).resolve()
 PROJECT_PATH = THIS_FILE.parents[2]
 MODEL_WEIGHT_PATH = PROJECT_PATH / "models" / "pretrained" / "TTS"
-MODEL_CODE_PATH = PROJECT_PATH / "generation" / "models" / "moss-ttsd"
+MODEL_CODE_PATH = PROJECT_PATH / "generation" / "tts"
 
 sys.path.append(str(MODEL_CODE_PATH))
 
@@ -99,7 +99,7 @@ conversations = [
 
 batch_size = 1
 
-save_dir = Path("output")
+save_dir = PROJECT_PATH / "generation" / "data" / "audio" / "moss"
 save_dir.mkdir(exist_ok=True, parents=True)
 sample_idx = 0
 with torch.no_grad():
